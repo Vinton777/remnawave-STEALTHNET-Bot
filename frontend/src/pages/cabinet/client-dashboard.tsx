@@ -128,8 +128,12 @@ export function ClientDashboardPage() {
 
   useEffect(() => {
     const payment = searchParams.get("payment");
+    const yoomoneyForm = searchParams.get("yoomoney_form");
     if (payment === "success" || payment === "failed") {
       setPaymentMessage(payment);
+      setSearchParams({}, { replace: true });
+      if (token) refreshProfile().catch(() => {});
+    } else if (yoomoneyForm === "success") {
       setSearchParams({}, { replace: true });
       if (token) refreshProfile().catch(() => {});
     }

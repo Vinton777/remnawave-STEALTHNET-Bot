@@ -32,12 +32,13 @@ export async function createPlategaTransaction(
 ): Promise<{ paymentUrl: string; transactionId: string } | { error: string }> {
   const { amount, currency, orderId, paymentMethod, returnUrl, failedUrl, description } = params;
   const url = `${PLATEGA_API_BASE}/transaction/process`;
-  const body = {
+  const body: Record<string, unknown> = {
     paymentMethod: Number(paymentMethod) || 2,
     paymentDetails: { amount: Number(amount), currency: currency.toUpperCase() },
     description: description || `Оплата заказа ${orderId}`,
     return: returnUrl,
     failedUrl,
+    orderId,
   };
 
   const headers: Record<string, string> = {

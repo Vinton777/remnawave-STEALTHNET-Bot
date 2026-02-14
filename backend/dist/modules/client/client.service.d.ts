@@ -88,6 +88,7 @@ export declare function getSystemConfig(): Promise<{
     agreementLink: string | null;
     offerLink: string | null;
     instructionsLink: string | null;
+    themeAccent: string;
 }>;
 export type CategoryEmojis = Record<string, string>;
 export type PlategaMethodConfig = {
@@ -137,5 +138,6 @@ export declare function getPublicConfig(): Promise<{
     agreementLink: string | null;
     offerLink: string | null;
     instructionsLink: string | null;
+    themeAccent: string;
 }>;
 //# sourceMappingURL=client.service.d.ts.map

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { RefreshCw, Download, Upload, Link2, Settings2, Gift, Users, ArrowLeftRight, Mail, MessageCircle, CreditCard, ChevronDown, Copy, Check, Bot, FileJson, Palette } from "lucide-react";
+import { RefreshCw, Download, Upload, Link2, Settings2, Gift, Users, ArrowLeftRight, Mail, MessageCircle, CreditCard, ChevronDown, Copy, Check, Bot, FileJson, Palette, Wallet } from "lucide-react";
 import { ACCENT_PALETTES } from "@/contexts/theme";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -240,6 +240,10 @@ export function SettingsPage() {
         plategaMerchantId: settings.plategaMerchantId ?? null,
         plategaSecret: settings.plategaSecret && settings.plategaSecret !== "********" ? settings.plategaSecret : undefined,
         plategaMethods: settings.plategaMethods != null ? JSON.stringify(settings.plategaMethods) : undefined,
+        yoomoneyClientId: settings.yoomoneyClientId ?? null,
+        yoomoneyClientSecret: settings.yoomoneyClientSecret && settings.yoomoneyClientSecret !== "********" ? settings.yoomoneyClientSecret : undefined,
+        yoomoneyReceiverWallet: settings.yoomoneyReceiverWallet ?? null,
+        yoomoneyNotificationSecret: settings.yoomoneyNotificationSecret && settings.yoomoneyNotificationSecret !== "********" ? settings.yoomoneyNotificationSecret : undefined,
         botButtons: settings.botButtons != null ? JSON.stringify(settings.botButtons) : undefined,
         botEmojis: settings.botEmojis != null ? settings.botEmojis : undefined,
         botBackLabel: settings.botBackLabel ?? null,
@@ -863,6 +867,42 @@ export function SettingsPage() {
                     </div>
                   </CollapsibleContent>
                 </Collapsible>
+                <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
+                  <div className="flex items-center gap-2">
+                    <Users className="h-4 w-4 text-primary" />
+                    <Label className="text-base font-medium">Принудительная подписка на канал</Label>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Если включено — пользователь не сможет пользоваться ботом, пока не подпишется на указанный канал/группу. Бот должен быть администратором канала/группы.
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <Checkbox
+                      checked={!!settings.forceSubscribeEnabled}
+                      onCheckedChange={(checked) =>
+                        setSettings((s) => (s ? { ...s, forceSubscribeEnabled: checked === true } : s))
+                      }
+                    />
+                    <Label className="text-sm">Включить проверку подписки</Label>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">ID или @username канала/группы</Label>
+                    <Input
+                      value={settings.forceSubscribeChannelId ?? ""}
+                      onChange={(e) => setSettings((s) => (s ? { ...s, forceSubscribeChannelId: e.target.value || null } : s))}
+                      placeholder="@channelname или -1001234567890"
+                    />
+                    <p className="text-xs text-muted-foreground">Укажите @username (например @my_channel) или числовой ID канала/группы.</p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Сообщение для неподписанных</Label>
+                    <Input
+                      value={settings.forceSubscribeMessage ?? ""}
+                      onChange={(e) => setSettings((s) => (s ? { ...s, forceSubscribeMessage: e.target.value || null } : s))}
+                      placeholder="Для использования бота подпишитесь на наш канал"
+                    />
+                    <p className="text-xs text-muted-foreground">Текст, который увидит пользователь. Если пусто — будет использован текст по умолчанию.</p>
+                  </div>
+                </div>
                 {message && <p className="text-sm text-muted-foreground">{message}</p>}
                 <Button type="submit" disabled={saving}>
                   {saving ? "Сохранение…" : "Сохранить"}
@@ -1155,6 +1195,62 @@ export function SettingsPage() {
                     <Button type="submit" disabled={saving}>
                       {saving ? "Сохранение…" : "Сохранить"}
                     </Button>
+                  </CardContent>
+                </CollapsibleContent>
+              </Collapsible>
+
+              <Collapsible defaultOpen={false} className="group mt-4">
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="w-full cursor-pointer rounded-t-lg text-left transition-colors hover:bg-muted/50 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                  >
+                    <CardHeader className="pointer-events-none [&_.chevron]:transition-transform [&_.chevron]:duration-200 group-data-[state=open]:[&_.chevron]:rotate-180">
+                      <div className="flex items-center justify-between pr-2">
+                        <div className="flex items-center gap-2">
+                          <Wallet className="h-5 w-5 text-primary" />
+                          <CardTitle>ЮMoney</CardTitle>
+                          <span className="text-xs font-normal text-muted-foreground">— оплата картой</span>
+                        </div>
+                        <ChevronDown className="chevron h-5 w-5 shrink-0 text-muted-foreground" />
+                      </div>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        Регистрация: <a href="https://yoomoney.ru/myservices/new" target="_blank" rel="noreferrer" className="text-primary underline">yoomoney.ru/myservices/new</a>. URL вебхука: <code className="text-xs bg-muted px-1 rounded">{settings.publicAppUrl ? `${String(settings.publicAppUrl).replace(/\/$/, "")}/api/webhooks/yoomoney` : "—"}</code>
+                      </p>
+                    </CardHeader>
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <CardContent className="space-y-4 border-t pt-4">
+                    <p className="text-sm text-muted-foreground">
+                      Пополнение баланса только через оплату картой (форма ЮMoney). Укажите кошелёк для приёма и секрет вебхука.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-2 sm:col-span-2">
+                        <Label>Номер кошелька для приёма</Label>
+                        <Input
+                          value={settings.yoomoneyReceiverWallet ?? ""}
+                          onChange={(e) => setSettings((s) => (s ? { ...s, yoomoneyReceiverWallet: e.target.value || null } : s))}
+                          placeholder="41001123456789"
+                        />
+                        <p className="text-xs text-muted-foreground">Средства зачисляются на этот кошелёк при пополнении через ЮMoney.</p>
+                      </div>
+                      <div className="space-y-2 sm:col-span-2">
+                        <Label>Секрет для вебхука (HTTP-уведомления)</Label>
+                        <Input
+                          type="password"
+                          value={settings.yoomoneyNotificationSecret ?? ""}
+                          onChange={(e) => setSettings((s) => (s ? { ...s, yoomoneyNotificationSecret: e.target.value || null } : s))}
+                          placeholder="Из настроек кошелька ЮMoney → Уведомления"
+                        />
+                        <p className="text-xs text-muted-foreground">Задаётся в <a href="https://yoomoney.ru/transfer/myservices/http-notification" target="_blank" rel="noreferrer" className="text-primary underline">настройках HTTP-уведомлений</a> кошелька.</p>
+                      </div>
+                    </div>
+                    <div className="pt-2 border-t">
+                      <Button type="submit" disabled={saving} className="min-w-[140px]">
+                        {saving ? "Сохранение…" : "Сохранить"}
+                      </Button>
+                    </div>
                   </CardContent>
                 </CollapsibleContent>
               </Collapsible>

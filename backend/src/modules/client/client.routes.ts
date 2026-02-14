@@ -1,5 +1,6 @@
 import { randomBytes, createHmac } from "crypto";
 import { randomUUID } from "crypto";
+import { env } from "../../config/index.js";
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../db.js";
@@ -16,6 +17,7 @@ import { remnaCreateUser, remnaUpdateUser, isRemnaConfigured, remnaGetUser, remn
 import { sendVerificationEmail, isSmtpConfigured } from "../mail/mail.service.js";
 import { createPlategaTransaction, isPlategaConfigured } from "../platega/platega.service.js";
 import { activateTariffForClient } from "../tariff/tariff-activation.service.js";
+import { getAuthUrl, exchangeCodeForToken, requestPayment, processPayment } from "../yoomoney/yoomoney.service.js";
 
 /** Извлекает текущий expireAt из ответа Remna. Возвращает Date если в будущем, иначе null. */
 function extractCurrentExpireAt(data: unknown): Date | null {
@@ -368,7 +370,7 @@ clientAuthRouter.get("/me", requireClientAuth, async (req, res) => {
   const client = (req as unknown as { client: { id: string } }).client;
   const full = await prisma.client.findUnique({
     where: { id: client.id },
-    select: { id: true, email: true, telegramId: true, telegramUsername: true, preferredLang: true, preferredCurrency: true, balance: true, referralCode: true, referralPercent: true, remnawaveUuid: true, trialUsed: true, isBlocked: true },
+    select: { id: true, email: true, telegramId: true, telegramUsername: true, preferredLang: true, preferredCurrency: true, balance: true, referralCode: true, referralPercent: true, remnawaveUuid: true, trialUsed: true, isBlocked: true, yoomoneyAccessToken: true },
   });
   if (!full) return res.status(401).json({ message: "Unauthorized" });
   return res.json(toClientShape(full));
@@ -387,6 +389,7 @@ function toClientShape(c: {
   remnawaveUuid: string | null;
   trialUsed?: boolean;
   isBlocked?: boolean;
+  yoomoneyAccessToken?: string | null;
 }) {
   return {
     id: c.id,
@@ -401,12 +404,69 @@ function toClientShape(c: {
     remnawaveUuid: c.remnawaveUuid,
     trialUsed: c.trialUsed ?? false,
     isBlocked: c.isBlocked ?? false,
+    yoomoneyConnected: Boolean(c.yoomoneyAccessToken),
   };
 }
 
 // Единый роутер /api/client: /auth (логин, регистрация, me) + кабинет (подписка, платежи)
 export const clientRouter = Router();
 clientRouter.use("/auth", clientAuthRouter);
+
+// ЮMoney OAuth callback — без авторизации клиента (редирект с ЮMoney)
+function yoomoneyStateSign(clientId: string): string {
+  const payload = JSON.stringify({ clientId });
+  const sig = createHmac("sha256", env.JWT_SECRET).update(payload).digest("base64url");
+  return Buffer.from(payload, "utf8").toString("base64url") + "." + sig;
+}
+function yoomoneyStateVerify(state: string): string | null {
+  const dot = state.indexOf(".");
+  if (dot <= 0) return null;
+  const payloadB64 = state.slice(0, dot);
+  const sig = state.slice(dot + 1);
+  try {
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf8")) as { clientId?: string };
+    if (!payload?.clientId) return null;
+    const expected = createHmac("sha256", env.JWT_SECRET).update(JSON.stringify({ clientId: payload.clientId })).digest("base64url");
+    if (sig !== expected) return null;
+    return payload.clientId;
+  } catch {
+    return null;
+  }
+}
+
+clientRouter.get("/yoomoney/callback", async (req, res) => {
+  const code = typeof req.query.code === "string" ? req.query.code : null;
+  const state = typeof req.query.state === "string" ? req.query.state : null;
+  const config = await getSystemConfig();
+  const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
+  const redirectFail = appUrl ? `${appUrl}/cabinet?yoomoney=error` : "/";
+  if (!code?.trim() || !state?.trim()) {
+    return res.redirect(302, redirectFail);
+  }
+  const clientId = yoomoneyStateVerify(state);
+  if (!clientId) {
+    return res.redirect(302, redirectFail);
+  }
+  const redirectUri = appUrl ? `${appUrl}/api/client/yoomoney/callback` : "";
+  if (!redirectUri) {
+    return res.redirect(302, redirectFail);
+  }
+  const result = await exchangeCodeForToken({
+    code: code.trim(),
+    clientId: config.yoomoneyClientId || "",
+    redirectUri,
+    clientSecret: config.yoomoneyClientSecret,
+  });
+  if ("error" in result) {
+    return res.redirect(302, appUrl ? `${appUrl}/cabinet?yoomoney=error&reason=${encodeURIComponent(result.error)}` : redirectFail);
+  }
+  await prisma.client.update({
+    where: { id: clientId },
+    data: { yoomoneyAccessToken: result.access_token },
+  });
+  const redirectOk = appUrl ? `${appUrl}/cabinet?yoomoney=connected` : redirectFail;
+  return res.redirect(302, redirectOk);
+});
 
 clientRouter.use(requireClientAuth);
 
@@ -1003,6 +1063,215 @@ clientRouter.post("/payments/balance", async (req, res) => {
     message: `Тариф «${tariff.name}» активирован! Списано ${finalPrice.toFixed(2)} ${tariff.currency.toUpperCase()} с баланса.`,
     paymentId: payment.id,
     newBalance: clientDb.balance - finalPrice,
+  });
+});
+
+// ——— ЮMoney: пополнение баланса ———
+
+clientRouter.get("/yoomoney/auth-url", async (req, res) => {
+  const clientId = (req as unknown as { clientId: string }).clientId;
+  const config = await getSystemConfig();
+  const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
+  if (!config.yoomoneyClientId?.trim() || !appUrl) {
+    return res.status(503).json({ message: "ЮMoney не настроен или не указан URL приложения" });
+  }
+  const redirectUri = `${appUrl}/api/client/yoomoney/callback`;
+  const state = yoomoneyStateSign(clientId);
+  const url = getAuthUrl({ clientId: config.yoomoneyClientId, redirectUri, state });
+  return res.json({ url });
+});
+
+const yoomoneyRequestTopupSchema = z.object({ amount: z.number().positive().max(1e7) });
+clientRouter.post("/yoomoney/request-topup", async (req, res) => {
+  const client = (req as unknown as { client: { id: string; yoomoneyAccessToken?: string | null } }).client;
+  const parsed = yoomoneyRequestTopupSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: "Укажите сумму", errors: parsed.error.flatten() });
+  const { amount } = parsed.data;
+  if (!client.yoomoneyAccessToken?.trim()) {
+    return res.status(400).json({ message: "Сначала подключите кошелёк ЮMoney" });
+  }
+  const config = await getSystemConfig();
+  const receiver = config.yoomoneyReceiverWallet?.trim();
+  if (!receiver) return res.status(503).json({ message: "ЮMoney не настроен" });
+
+  const amountRounded = Math.round(amount * 100) / 100;
+  const orderId = randomUUID();
+  const payment = await prisma.payment.create({
+    data: {
+      clientId: client.id,
+      orderId,
+      amount: amountRounded,
+      currency: "RUB",
+      status: "PENDING",
+      provider: "yoomoney",
+      metadata: JSON.stringify({ type: "balance_topup" }),
+    },
+  });
+
+  const result = await requestPayment(client.yoomoneyAccessToken, {
+    to: receiver,
+    amount_due: amountRounded,
+    label: payment.id,
+    message: `Пополнение баланса STEALTHNET. Заказ ${orderId}`,
+    comment: `Пополнение баланса`,
+  });
+
+  if (result.status === "refused") {
+    await prisma.payment.update({ where: { id: payment.id }, data: { status: "FAILED" } });
+    return res.status(400).json({ message: result.error_description ?? result.error });
+  }
+
+  await prisma.payment.update({
+    where: { id: payment.id },
+    data: { metadata: JSON.stringify({ type: "balance_topup", request_id: result.request_id }) },
+  });
+
+  return res.json({
+    paymentId: payment.id,
+    request_id: result.request_id,
+    money_source: result.money_source,
+    contract_amount: result.contract_amount,
+  });
+});
+
+const yoomoneyProcessPaymentSchema = z.object({
+  paymentId: z.string().min(1),
+  request_id: z.string().min(1),
+  money_source: z.string().optional(),
+  csc: z.string().max(10).optional(),
+});
+clientRouter.post("/yoomoney/process-payment", async (req, res) => {
+  const client = (req as unknown as { client: { id: string; yoomoneyAccessToken?: string | null } }).client;
+  const parsed = yoomoneyProcessPaymentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: "Неверные параметры", errors: parsed.error.flatten() });
+  const { paymentId, request_id, money_source, csc } = parsed.data;
+
+  const payment = await prisma.payment.findFirst({
+    where: { id: paymentId, clientId: client.id, status: "PENDING", provider: "yoomoney" },
+  });
+  if (!payment) return res.status(404).json({ message: "Платёж не найден или уже обработан" });
+  if (!client.yoomoneyAccessToken?.trim()) return res.status(400).json({ message: "Кошелёк ЮMoney не подключён" });
+
+  const result = await processPayment(client.yoomoneyAccessToken, { request_id, money_source, csc });
+
+  if (result.status === "in_progress") {
+    return res.status(202).json({ status: "in_progress", message: "Платёж обрабатывается, повторите запрос через минуту" });
+  }
+  if (result.status === "ext_auth_required") {
+    return res.status(200).json({ status: "ext_auth_required", acs_uri: result.acs_uri, acs_params: result.acs_params });
+  }
+  if (result.status === "refused") {
+    return res.status(400).json({ message: result.error });
+  }
+
+  await prisma.payment.update({
+    where: { id: payment.id },
+    data: { status: "PAID", paidAt: new Date(), externalId: result.payment_id ?? undefined },
+  });
+  const updated = await prisma.client.update({
+    where: { id: client.id },
+    data: { balance: { increment: payment.amount } },
+    select: { balance: true },
+  });
+
+  return res.json({ message: "Баланс пополнен", newBalance: updated.balance });
+});
+
+// ——— ЮMoney: форма перевода (оплата картой). Пополнение баланса или покупка тарифа ———
+const yoomoneyFormPaymentSchema = z.object({
+  amount: z.number().positive().max(1e7),
+  paymentType: z.enum(["PC", "AC"]), // PC = с кошелька, AC = с карты
+  tariffId: z.string().min(1).optional(),
+});
+clientRouter.post("/yoomoney/create-form-payment", async (req, res) => {
+  const clientId = (req as unknown as { clientId: string }).clientId;
+  const parsed = yoomoneyFormPaymentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: "Укажите сумму и способ оплаты", errors: parsed.error.flatten() });
+  const { amount, paymentType, tariffId: tariffIdBody } = parsed.data;
+  const config = await getSystemConfig();
+  const receiver = config.yoomoneyReceiverWallet?.trim();
+  if (!receiver) return res.status(503).json({ message: "ЮMoney не настроен" });
+
+  let tariffIdToStore: string | null = null;
+  if (tariffIdBody) {
+    const tariff = await prisma.tariff.findUnique({ where: { id: tariffIdBody } });
+    if (!tariff) return res.status(400).json({ message: "Тариф не найден" });
+    tariffIdToStore = tariffIdBody;
+  }
+
+  const amountRounded = Math.round(amount * 100) / 100;
+  const orderId = randomUUID();
+  const payment = await prisma.payment.create({
+    data: {
+      clientId,
+      orderId,
+      amount: amountRounded,
+      currency: "RUB",
+      status: "PENDING",
+      provider: "yoomoney_form",
+      tariffId: tariffIdToStore,
+      metadata: JSON.stringify({ paymentType }),
+    },
+  });
+
+  const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
+  const successURL = appUrl ? `${appUrl}/cabinet?yoomoney_form=success` : "";
+  const targets = tariffIdToStore ? `Тариф STEALTHNET #${orderId}` : `Пополнение баланса STEALTHNET #${orderId}`;
+  const params = new URLSearchParams({
+    receiver,
+    "quickpay-form": "shop",
+    targets,
+    sum: String(amountRounded),
+    paymentType,
+    label: payment.id.slice(0, 64),
+    successURL,
+  });
+  const paymentUrl = `https://yoomoney.ru/quickpay/confirm.xml?${params.toString()}`;
+
+  return res.status(201).json({
+    paymentId: payment.id,
+    paymentUrl,
+    form: {
+      receiver,
+      sum: amountRounded,
+      label: payment.id,
+      paymentType,
+      successURL,
+    },
+    successURL,
+  });
+});
+
+clientRouter.get("/yoomoney/form-payment/:paymentId", async (req, res) => {
+  const clientId = (req as unknown as { clientId: string }).clientId;
+  const paymentId = typeof req.params.paymentId === "string" ? req.params.paymentId : "";
+  if (!paymentId) return res.status(400).json({ message: "paymentId required" });
+
+  const payment = await prisma.payment.findFirst({
+    where: { id: paymentId, clientId, status: "PENDING", provider: "yoomoney_form" },
+    select: { id: true, amount: true, metadata: true },
+  });
+  if (!payment) return res.status(404).json({ message: "Платёж не найден или уже оплачен" });
+
+  const config = await getSystemConfig();
+  const receiver = config.yoomoneyReceiverWallet?.trim();
+  if (!receiver) return res.status(503).json({ message: "ЮMoney не настроен" });
+
+  let paymentType = "PC";
+  try {
+    const meta = payment.metadata ? JSON.parse(payment.metadata) as { paymentType?: string } : {};
+    if (meta.paymentType === "AC" || meta.paymentType === "PC") paymentType = meta.paymentType;
+  } catch { /* ignore */ }
+
+  const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
+  const successURL = appUrl ? `${appUrl}/cabinet?yoomoney_form=success` : "";
+
+  return res.json({
+    receiver,
+    sum: payment.amount,
+    label: payment.id,
+    paymentType,
+    successURL,
   });
 });
 

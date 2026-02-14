@@ -32,6 +32,7 @@ export function ClientTariffsPage() {
   const [tariffs, setTariffs] = useState<PublicTariffCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [plategaMethods, setPlategaMethods] = useState<{ id: number; label: string }[]>([]);
+  const [yoomoneyEnabled, setYoomoneyEnabled] = useState(false);
   const [trialConfig, setTrialConfig] = useState<{ trialEnabled: boolean; trialDays: number }>({ trialEnabled: false, trialDays: 0 });
   const [payModal, setPayModal] = useState<{ tariff: TariffForPay } | null>(null);
   const [payLoading, setPayLoading] = useState(false);
@@ -57,6 +58,7 @@ export function ClientTariffsPage() {
   useEffect(() => {
     api.getPublicConfig().then((c) => {
       setPlategaMethods(c.plategaMethods ?? []);
+      setYoomoneyEnabled(Boolean(c.yoomoneyEnabled));
       setTrialConfig({ trialEnabled: !!c.trialEnabled, trialDays: c.trialDays ?? 0 });
     }).catch(() => {});
   }, []);
@@ -156,6 +158,33 @@ export function ClientTariffsPage() {
       await refreshProfile();
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Ошибка оплаты");
+    } finally {
+      setPayLoading(false);
+    }
+  }
+
+  /** Оплата тарифа ЮMoney (картой). Только для тарифов в рублях. */
+  async function startYoomoneyPayment(tariff: TariffForPay) {
+    if (!token) return;
+    if (tariff.currency.toUpperCase() !== "RUB") {
+      setPayError("ЮMoney принимает только рубли. Выберите тариф в RUB или оплатите картой Platega.");
+      return;
+    }
+    setPayError(null);
+    setPayLoading(true);
+    try {
+      const amount = promoResult ? getDiscountedPrice(tariff.price) : tariff.price;
+      const res = await api.yoomoneyCreateFormPayment(token, {
+        amount,
+        paymentType: "AC",
+        tariffId: tariff.id,
+      });
+      setPayModal(null);
+      setPromoInput("");
+      setPromoResult(null);
+      if (res.paymentUrl) window.location.href = res.paymentUrl;
+    } catch (e) {
+      setPayError(e instanceof Error ? e.message : "Ошибка создания платежа");
     } finally {
       setPayLoading(false);
     }
@@ -335,6 +364,19 @@ export function ClientTariffsPage() {
                 </Button>
               );
             })()}
+
+            {/* ЮMoney — только для тарифов в рублях */}
+            {payModal && yoomoneyEnabled && payModal.tariff.currency.toUpperCase() === "RUB" && (
+              <Button
+                variant="outline"
+                className="justify-start gap-2"
+                disabled={payLoading}
+                onClick={() => startYoomoneyPayment(payModal.tariff)}
+              >
+                {payLoading ? <Loader2 className="h-4 w-4 animate-spin shrink-0" /> : <CreditCard className="h-4 w-4 shrink-0" />}
+                ЮMoney — оплата картой
+              </Button>
+            )}
 
             {/* Platega */}
             {payModal && plategaMethods.map((m) => (

@@ -14,6 +14,7 @@ import { getSystemConfig } from "../client/client.service.js";
 import { syncFromRemna, syncToRemna, createRemnaUsersForClientsWithoutUuid } from "../sync/sync.service.js";
 import { distributeReferralRewards } from "../referral/referral.service.js";
 import { activateTariffByPaymentId } from "../tariff/tariff-activation.service.js";
+import { registerBackupRoutes } from "../backup/backup.routes.js";
 export const adminRouter = Router();
 adminRouter.use(requireAuth);
 /** Обёртка для async-роутов: ошибки передаются в next() и возвращают 500. */
@@ -22,6 +23,7 @@ function asyncRoute(fn) {
         Promise.resolve(fn(req, res)).catch(next);
     };
 }
+registerBackupRoutes(adminRouter, asyncRoute);
 adminRouter.get("/me", asyncRoute(async (req, res) => {
     const adminId = req.adminId;
     const admin = await prisma.admin.findUnique({
@@ -792,6 +794,7 @@ const updateSettingsSchema = z.object({
     agreementLink: z.string().max(2000).nullable().optional(),
     offerLink: z.string().max(2000).nullable().optional(),
     instructionsLink: z.string().max(2000).nullable().optional(),
+    themeAccent: z.string().max(50).optional(),
 });
 adminRouter.patch("/settings", async (req, res) => {
     const rawBody = req.body;
@@ -1013,6 +1016,13 @@ adminRouter.patch("/settings", async (req, res) => {
             where: { key: "subscription_page_config" },
             create: { key: "subscription_page_config", value: val },
             update: { value: val },
+        });
+    }
+    if (updates.themeAccent !== undefined) {
+        await prisma.systemSetting.upsert({
+            where: { key: "theme_accent" },
+            create: { key: "theme_accent", value: updates.themeAccent },
+            update: { value: updates.themeAccent },
         });
     }
     for (const [key, settingKey] of [
@@ -1314,5 +1324,350 @@ adminRouter.delete("/promo-codes/:id", async (req, res) => {
         return res.status(404).json({ message: "Not found" });
     await prisma.promoCode.delete({ where: { id: req.params.id } });
     return res.json({ ok: true });
+});
+// ═══════════════════════════════════════════════════════════════
+//  АНАЛИТИКА (полная)
+// ═══════════════════════════════════════════════════════════════
+/** helper: заполняет дневной ряд нулями */
+function fillDaySeries(map, from, to) {
+    const out = [];
+    const d = new Date(from);
+    while (d <= to) {
+        const key = d.toISOString().slice(0, 10);
+        out.push({ date: key, value: map[key] ?? 0 });
+        d.setDate(d.getDate() + 1);
+    }
+    return out;
+}
+adminRouter.get("/analytics", async (_req, res) => {
+    const now = new Date();
+    const day1Ago = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const day7Ago = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const day30Ago = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const day90Ago = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    // ─── Все оплаченные платежи за 90 дней ───
+    const payments90 = await prisma.payment.findMany({
+        where: { status: "PAID", paidAt: { gte: day90Ago } },
+        select: { amount: true, paidAt: true, provider: true, tariffId: true, clientId: true },
+        orderBy: { paidAt: "asc" },
+    });
+    const revenueByDay = {};
+    const revenueByProvider = {};
+    const tariffSalesCount = {};
+    const tariffRevenue = {};
+    const uniqueBuyers = new Set();
+    let rev7 = 0, rev30 = 0, cnt7 = 0, cnt30 = 0;
+    for (const p of payments90) {
+        const day = p.paidAt ? p.paidAt.toISOString().slice(0, 10) : "unknown";
+        revenueByDay[day] = (revenueByDay[day] ?? 0) + p.amount;
+        const prov = p.provider ?? "unknown";
+        revenueByProvider[prov] = (revenueByProvider[prov] ?? 0) + p.amount;
+        if (p.tariffId) {
+            tariffSalesCount[p.tariffId] = (tariffSalesCount[p.tariffId] ?? 0) + 1;
+            tariffRevenue[p.tariffId] = (tariffRevenue[p.tariffId] ?? 0) + p.amount;
+        }
+        uniqueBuyers.add(p.clientId);
+        if (p.paidAt && p.paidAt >= day7Ago) {
+            rev7 += p.amount;
+            cnt7++;
+        }
+        if (p.paidAt && p.paidAt >= day30Ago) {
+            rev30 += p.amount;
+            cnt30++;
+        }
+    }
+    const revenueSeries = fillDaySeries(revenueByDay, day90Ago, now);
+    // ─── Клиенты за 90 дней ───
+    const allClients = await prisma.client.findMany({
+        select: {
+            id: true, createdAt: true, telegramId: true, email: true,
+            trialUsed: true, remnawaveUuid: true, referrerId: true, balance: true,
+        },
+    });
+    const clientsByDay = {};
+    let botClients = 0, siteClients = 0, bothClients = 0;
+    let trialUsedCount = 0;
+    let withReferrer = 0;
+    const totalBalance = allClients.reduce((s, c) => s + c.balance, 0);
+    for (const c of allClients) {
+        if (c.createdAt >= day90Ago) {
+            const day = c.createdAt.toISOString().slice(0, 10);
+            clientsByDay[day] = (clientsByDay[day] ?? 0) + 1;
+        }
+        const hasBot = !!c.telegramId;
+        const hasSite = !!c.email;
+        if (hasBot && hasSite)
+            bothClients++;
+        else if (hasBot)
+            botClients++;
+        else if (hasSite)
+            siteClients++;
+        if (c.trialUsed)
+            trialUsedCount++;
+        if (c.referrerId)
+            withReferrer++;
+    }
+    const clientsSeries = fillDaySeries(clientsByDay, day90Ago, now);
+    // ─── Триалы по дням (клиенты с trialUsed, приближаем по createdAt) ───
+    // Точной даты триала нет, но можем показать клиентов использовавших триал
+    // Вместо этого считаем из promo activations и trial по дням
+    const trialClients = allClients.filter((c) => c.trialUsed && c.createdAt >= day90Ago);
+    const trialsByDay = {};
+    for (const c of trialClients) {
+        const day = c.createdAt.toISOString().slice(0, 10);
+        trialsByDay[day] = (trialsByDay[day] ?? 0) + 1;
+    }
+    const trialsSeries = fillDaySeries(trialsByDay, day90Ago, now);
+    // ─── Конверсия: триал → покупка ───
+    const trialClientIds = new Set(allClients.filter((c) => c.trialUsed).map((c) => c.id));
+    const trialToPaid = [...trialClientIds].filter((id) => uniqueBuyers.has(id)).length;
+    const trialConversionRate = trialClientIds.size > 0 ? Math.round((trialToPaid / trialClientIds.size) * 100) : 0;
+    // ─── Топ тарифов (продажи + доход) ───
+    const tariffIds = Object.keys(tariffSalesCount);
+    const tariffRows = tariffIds.length > 0
+        ? await prisma.tariff.findMany({ where: { id: { in: tariffIds } }, select: { id: true, name: true } })
+        : [];
+    const tariffMap = Object.fromEntries(tariffRows.map((t) => [t.id, t.name]));
+    const topTariffs = Object.entries(tariffSalesCount)
+        .map(([id, count]) => ({ name: tariffMap[id] ?? id, count, revenue: tariffRevenue[id] ?? 0 }))
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 10);
+    // ─── Доход по провайдерам ───
+    const providerSeries = Object.entries(revenueByProvider).map(([provider, amount]) => ({
+        provider: provider === "balance" ? "Баланс" : provider === "platega" ? "Platega" : provider,
+        amount,
+    }));
+    // ─── Топ рефералов ───
+    const referralCredits = await prisma.referralCredit.findMany({
+        select: { referrerId: true, amount: true, level: true },
+    });
+    const refEarnings = {};
+    for (const rc of referralCredits) {
+        if (!refEarnings[rc.referrerId])
+            refEarnings[rc.referrerId] = { total: 0, l1: 0, l2: 0, l3: 0, count: 0 };
+        const e = refEarnings[rc.referrerId];
+        e.total += rc.amount;
+        e.count++;
+        if (rc.level === 1)
+            e.l1 += rc.amount;
+        else if (rc.level === 2)
+            e.l2 += rc.amount;
+        else if (rc.level === 3)
+            e.l3 += rc.amount;
+    }
+    // Количество рефералов у каждого реферера
+    const referralCounts = {};
+    for (const c of allClients) {
+        if (c.referrerId) {
+            referralCounts[c.referrerId] = (referralCounts[c.referrerId] ?? 0) + 1;
+        }
+    }
+    const topReferrerIds = Object.entries(refEarnings)
+        .sort((a, b) => b[1].total - a[1].total)
+        .slice(0, 15)
+        .map(([id]) => id);
+    const topReferrerClients = topReferrerIds.length > 0
+        ? await prisma.client.findMany({
+            where: { id: { in: topReferrerIds } },
+            select: { id: true, email: true, telegramUsername: true, telegramId: true },
+        })
+        : [];
+    const refClientMap = Object.fromEntries(topReferrerClients.map((c) => [c.id, c]));
+    const topReferrers = topReferrerIds.map((id) => {
+        const c = refClientMap[id];
+        const e = refEarnings[id];
+        return {
+            id,
+            name: c?.telegramUsername ? `@${c.telegramUsername}` : c?.email ?? c?.telegramId ?? id,
+            referrals: referralCounts[id] ?? 0,
+            earnings: e.total,
+            l1: e.l1,
+            l2: e.l2,
+            l3: e.l3,
+            credits: e.count,
+        };
+    });
+    // ─── Промо аналитика ───
+    const [promoActivationsTotal, promoCodeUsagesTotal] = await Promise.all([
+        prisma.promoActivation.count(),
+        prisma.promoCodeUsage.count(),
+    ]);
+    // Промо-ссылки по группам
+    const promoGroupStats = await prisma.promoGroup.findMany({
+        select: { id: true, name: true, code: true, maxActivations: true, _count: { select: { activations: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+    });
+    // Промокоды по коду
+    const promoCodeStats = await prisma.promoCode.findMany({
+        select: { id: true, code: true, name: true, type: true, maxUses: true, _count: { select: { usages: true } } },
+        orderBy: { createdAt: "desc" },
+        take: 10,
+    });
+    // Промо активации по дням
+    const promoActs90 = await prisma.promoActivation.findMany({
+        where: { createdAt: { gte: day90Ago } },
+        select: { createdAt: true },
+    });
+    const promoActsByDay = {};
+    for (const a of promoActs90) {
+        const day = a.createdAt.toISOString().slice(0, 10);
+        promoActsByDay[day] = (promoActsByDay[day] ?? 0) + 1;
+    }
+    const promoActsSeries = fillDaySeries(promoActsByDay, day90Ago, now);
+    // Промокоды использований по дням
+    const promoUsages90 = await prisma.promoCodeUsage.findMany({
+        where: { createdAt: { gte: day90Ago } },
+        select: { createdAt: true },
+    });
+    const promoUsagesByDay = {};
+    for (const u of promoUsages90) {
+        const day = u.createdAt.toISOString().slice(0, 10);
+        promoUsagesByDay[day] = (promoUsagesByDay[day] ?? 0) + 1;
+    }
+    const promoUsagesSeries = fillDaySeries(promoUsagesByDay, day90Ago, now);
+    // ─── Реферальные начисления по дням ───
+    const refCredits90 = await prisma.referralCredit.findMany({
+        where: { createdAt: { gte: day90Ago } },
+        select: { createdAt: true, amount: true },
+    });
+    const refCreditsByDay = {};
+    for (const rc of refCredits90) {
+        const day = rc.createdAt.toISOString().slice(0, 10);
+        refCreditsByDay[day] = (refCreditsByDay[day] ?? 0) + rc.amount;
+    }
+    const refCreditsSeries = fillDaySeries(refCreditsByDay, day90Ago, now);
+    // ─── Сводка ───
+    const [totalClients, activeClients, totalRevenueAgg, totalPayments, referralCreditsSum, clientsNew24h, clientsNew7d, clientsNew30d, paymentsPending] = await Promise.all([
+        prisma.client.count(),
+        prisma.client.count({ where: { remnawaveUuid: { not: null } } }),
+        prisma.payment.aggregate({ where: { status: "PAID" }, _sum: { amount: true } }),
+        prisma.payment.count({ where: { status: "PAID" } }),
+        prisma.referralCredit.aggregate({ _sum: { amount: true } }),
+        prisma.client.count({ where: { createdAt: { gte: day1Ago } } }),
+        prisma.client.count({ where: { createdAt: { gte: day7Ago } } }),
+        prisma.client.count({ where: { createdAt: { gte: day30Ago } } }),
+        prisma.payment.count({ where: { status: "PENDING" } }),
+    ]);
+    const totalRevenue = totalRevenueAgg._sum.amount ?? 0;
+    const avgCheck = totalPayments > 0 ? Math.round((totalRevenue / totalPayments) * 100) / 100 : 0;
+    const arpu = totalClients > 0 ? Math.round((totalRevenue / totalClients) * 100) / 100 : 0;
+    const payingClients = uniqueBuyers.size;
+    const payingPercent = totalClients > 0 ? Math.round((payingClients / totalClients) * 100) : 0;
+    return res.json({
+        // Графики
+        revenueSeries,
+        clientsSeries,
+        trialsSeries,
+        promoActsSeries,
+        promoUsagesSeries,
+        refCreditsSeries,
+        // Таблицы / списки
+        topTariffs,
+        providerSeries,
+        topReferrers,
+        promoGroupStats: promoGroupStats.map((g) => ({
+            name: g.name,
+            code: g.code,
+            maxActivations: g.maxActivations,
+            activations: g._count.activations,
+        })),
+        promoCodeStats: promoCodeStats.map((c) => ({
+            code: c.code,
+            name: c.name,
+            type: c.type,
+            maxUses: c.maxUses,
+            usages: c._count.usages,
+        })),
+        // Сводка
+        summary: {
+            totalClients,
+            activeClients,
+            totalRevenue,
+            totalPayments,
+            totalReferralPaid: referralCreditsSum._sum.amount ?? 0,
+            promoActivations: promoActivationsTotal,
+            promoCodeUsages: promoCodeUsagesTotal,
+            // Новое
+            clientsNew24h,
+            clientsNew7d,
+            clientsNew30d,
+            botClients,
+            siteClients,
+            bothClients,
+            trialUsedCount,
+            trialToPaid,
+            trialConversionRate,
+            avgCheck,
+            arpu,
+            payingClients,
+            payingPercent,
+            rev7,
+            rev30,
+            cnt7,
+            cnt30,
+            paymentsPending,
+            totalBalance: Math.round(totalBalance * 100) / 100,
+            withReferrer,
+        },
+    });
+});
+// ═══════════════════════════════════════════════════════════════
+//  ОТЧЁТЫ ПРОДАЖ
+// ═══════════════════════════════════════════════════════════════
+adminRouter.get("/sales-report", async (req, res) => {
+    const from = typeof req.query.from === "string" ? req.query.from : null;
+    const to = typeof req.query.to === "string" ? req.query.to : null;
+    const provider = typeof req.query.provider === "string" ? req.query.provider : null;
+    const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? "50"), 10) || 50));
+    const where = { status: "PAID" };
+    if (from || to) {
+        const paidAt = {};
+        if (from)
+            paidAt.gte = new Date(from);
+        if (to)
+            paidAt.lte = new Date(to + "T23:59:59.999Z");
+        where.paidAt = paidAt;
+    }
+    if (provider)
+        where.provider = provider;
+    const [total, payments] = await Promise.all([
+        prisma.payment.count({ where }),
+        prisma.payment.findMany({
+            where,
+            orderBy: { paidAt: "desc" },
+            skip: (page - 1) * limit,
+            take: limit,
+            include: {
+                client: { select: { id: true, email: true, telegramId: true, telegramUsername: true } },
+                tariff: { select: { id: true, name: true } },
+            },
+        }),
+    ]);
+    // Суммы
+    const agg = await prisma.payment.aggregate({ where, _sum: { amount: true }, _count: true });
+    return res.json({
+        items: payments.map((p) => ({
+            id: p.id,
+            orderId: p.orderId,
+            amount: p.amount,
+            currency: p.currency,
+            provider: p.provider ?? "unknown",
+            status: p.status,
+            tariffName: p.tariff?.name ?? null,
+            clientEmail: p.client?.email ?? null,
+            clientTelegramId: p.client?.telegramId ?? null,
+            clientTelegramUsername: p.client?.telegramUsername ?? null,
+            paidAt: p.paidAt?.toISOString() ?? null,
+            createdAt: p.createdAt.toISOString(),
+            metadata: p.metadata,
+        })),
+        total,
+        page,
+        limit,
+        totalAmount: agg._sum.amount ?? 0,
+        totalCount: agg._count,
+    });
 });
 //# sourceMappingURL=admin.routes.js.map

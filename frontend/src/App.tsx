@@ -20,6 +20,7 @@ import { PromoPage } from "@/pages/promo";
 import { PromoCodesPage } from "@/pages/promo-codes";
 import { AnalyticsPage } from "@/pages/analytics";
 import { SalesReportPage } from "@/pages/sales-report";
+import { BackupPage } from "@/pages/backup";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { CabinetLayout } from "@/pages/cabinet/cabinet-layout";
 import { ClientLoginPage } from "@/pages/cabinet/client-login";
@@ -30,6 +31,7 @@ import { ClientTariffsPage } from "@/pages/cabinet/client-tariffs";
 import { ClientProfilePage } from "@/pages/cabinet/client-profile";
 import { ClientReferralPage } from "@/pages/cabinet/client-referral";
 import { ClientSubscribePage } from "@/pages/cabinet/client-subscribe";
+import { ClientYooMoneyPayPage } from "@/pages/cabinet/client-yoomoney-pay";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { state } = useAuth();
@@ -130,6 +132,7 @@ function AppRoutes() {
         <Route path="promo-codes" element={<ForceChangePassword><PromoCodesPage /></ForceChangePassword>} />
         <Route path="analytics" element={<ForceChangePassword><AnalyticsPage /></ForceChangePassword>} />
         <Route path="sales-report" element={<ForceChangePassword><SalesReportPage /></ForceChangePassword>} />
+        <Route path="backup" element={<ForceChangePassword><BackupPage /></ForceChangePassword>} />
       </Route>
       <Route
         path="/cabinet"
@@ -180,6 +183,14 @@ function AppRoutes() {
           element={
             <RequireClientAuth>
               <ClientSubscribePage />
+            </RequireClientAuth>
+          }
+        />
+        <Route
+          path="yoomoney-pay"
+          element={
+            <RequireClientAuth>
+              <ClientYooMoneyPayPage />
             </RequireClientAuth>
           }
         />

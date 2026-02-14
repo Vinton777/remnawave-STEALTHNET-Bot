@@ -36,6 +36,7 @@ export async function getPublicConfig(): Promise<{
   trialEnabled?: boolean;
   trialDays?: number;
   plategaMethods?: { id: number; label: string }[];
+  yoomoneyEnabled?: boolean;
   botButtons?: { id: string; visible: boolean; label: string; order: number; style?: string; iconCustomEmojiId?: string }[] | null;
   /** Тексты меню с уже подставленными эмодзи ({{BALANCE}} → unicode из bot_emojis) */
   resolvedBotMenuTexts?: Record<string, string>;
@@ -55,6 +56,9 @@ export async function getPublicConfig(): Promise<{
   agreementLink?: string | null;
   offerLink?: string | null;
   instructionsLink?: string | null;
+  forceSubscribeEnabled?: boolean;
+  forceSubscribeChannelId?: string | null;
+  forceSubscribeMessage?: string | null;
 } | null> {
   return fetchJson("/api/public/config");
 }
@@ -114,6 +118,14 @@ export async function createPlategaPayment(
   }
 ): Promise<{ paymentUrl: string; orderId: string; paymentId: string }> {
   return fetchJson("/api/client/payments/platega", { method: "POST", body, token });
+}
+
+/** Создать платёж ЮMoney (оплата картой). Для тарифа передать tariffId. */
+export async function createYoomoneyPayment(
+  token: string,
+  body: { amount: number; paymentType: "AC"; tariffId?: string }
+): Promise<{ paymentId: string; paymentUrl: string }> {
+  return fetchJson("/api/client/yoomoney/create-form-payment", { method: "POST", body, token });
 }
 
 /** Обновить профиль (язык, валюта) */

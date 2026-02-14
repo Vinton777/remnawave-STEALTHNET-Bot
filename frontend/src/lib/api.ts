@@ -241,6 +241,100 @@ export const api = {
     return request("/admin/sync/create-remna-for-missing", { method: "POST", token });
   },
 
+  /** Создать бэкап БД (скачать SQL) */
+  async createBackup(token: string): Promise<{ blob: Blob; filename: string }> {
+    const headers = new Headers();
+    headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch(`${API_BASE}/admin/backup/create`, { headers });
+    if (res.status === 401 && token && tokenRefreshFn) {
+      const newToken = await tokenRefreshFn();
+      if (newToken) return api.createBackup(newToken);
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      let msg = res.statusText;
+      try {
+        const d = JSON.parse(text);
+        if (d.message) msg = d.message;
+      } catch {
+        // ignore
+      }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^";]+)"?/.exec(disposition);
+    const filename = match ? match[1].trim() : `stealthnet-backup-${new Date().toISOString().slice(0, 10)}.sql`;
+    return { blob, filename };
+  },
+
+  /** Список сохранённых на сервере бэкапов */
+  async getBackupList(token: string): Promise<{ items: { path: string; filename: string; date: string; size: number }[] }> {
+    return request("/admin/backup/list", { token });
+  },
+
+  /** Скачать бэкап с сервера по пути (path из списка) */
+  async downloadBackup(token: string, path: string): Promise<{ blob: Blob; filename: string }> {
+    const headers = new Headers();
+    headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch(`${API_BASE}/admin/backup/download?path=${encodeURIComponent(path)}`, { headers });
+    if (res.status === 401 && token && tokenRefreshFn) {
+      const newToken = await tokenRefreshFn();
+      if (newToken) return api.downloadBackup(newToken, path);
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      let msg = res.statusText;
+      try {
+        const d = JSON.parse(text);
+        if (d.message) msg = d.message;
+      } catch {
+        // ignore
+      }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^";]+)"?/.exec(disposition);
+    const filename = match ? match[1].trim() : path.split("/").pop() || "backup.sql";
+    return { blob, filename };
+  },
+
+  /** Восстановить БД из бэкапа на сервере (path из списка) */
+  async restoreBackupFromServer(token: string, path: string): Promise<{ message: string }> {
+    return request("/admin/backup/restore", {
+      method: "POST",
+      body: JSON.stringify({ confirm: "RESTORE", path }),
+      token,
+    });
+  },
+
+  /** Восстановить БД из загруженного SQL-файла */
+  async restoreBackup(token: string, file: File): Promise<{ message: string }> {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("confirm", "RESTORE");
+    const headers = new Headers();
+    headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch(`${API_BASE}/admin/backup/restore`, { method: "POST", body: form, headers });
+    const text = await res.text();
+    let data: unknown;
+    try {
+      data = text ? JSON.parse(text) : undefined;
+    } catch {
+      throw new Error(res.statusText || "Request failed");
+    }
+    if (res.status === 401 && token && tokenRefreshFn) {
+      const newToken = await tokenRefreshFn();
+      if (newToken) return api.restoreBackup(newToken, file);
+    }
+    if (!res.ok) {
+      const message = (data as { message?: string })?.message ?? res.statusText;
+      throw new Error(message);
+    }
+    return data as { message: string };
+  },
+
   async getTariffCategories(token: string): Promise<{ items: TariffCategoryWithTariffs[] }> {
     return request("/admin/tariff-categories", { token });
   },
@@ -341,6 +435,29 @@ export const api = {
     data: { tariffId: string; promoCode?: string }
   ): Promise<{ message: string; paymentId: string; newBalance: number }> {
     return request("/client/payments/balance", { method: "POST", body: JSON.stringify(data), token });
+  },
+
+  async getYoomoneyAuthUrl(token: string): Promise<{ url: string }> {
+    return request("/client/yoomoney/auth-url", { token });
+  },
+  /** Форма перевода ЮMoney (оплата картой). Пополнение баланса или покупка тарифа (tariffId опционально). */
+  async yoomoneyCreateFormPayment(
+    token: string,
+    data: { amount: number; paymentType: "PC" | "AC"; tariffId?: string }
+  ): Promise<{ paymentId: string; paymentUrl: string; form: { receiver: string; sum: number; label: string; paymentType: string; successURL: string }; successURL: string }> {
+    return request("/client/yoomoney/create-form-payment", { method: "POST", body: JSON.stringify(data), token });
+  },
+  async yoomoneyFormPaymentParams(token: string, paymentId: string): Promise<{ receiver: string; sum: number; label: string; paymentType: string; successURL: string }> {
+    return request(`/client/yoomoney/form-payment/${encodeURIComponent(paymentId)}`, { token });
+  },
+  async yoomoneyRequestTopup(token: string, amount: number): Promise<{ paymentId: string; request_id: string; money_source: Record<string, unknown>; contract_amount?: number }> {
+    return request("/client/yoomoney/request-topup", { method: "POST", body: JSON.stringify({ amount }), token });
+  },
+  async yoomoneyProcessPayment(
+    token: string,
+    data: { paymentId: string; request_id: string; money_source?: string; csc?: string }
+  ): Promise<{ message: string; newBalance: number }> {
+    return request("/client/yoomoney/process-payment", { method: "POST", body: JSON.stringify(data), token });
   },
 
   async clientActivateTrial(token: string): Promise<{ message: string; client: ClientProfile | null }> {
@@ -466,6 +583,10 @@ export type UpdateSettingsPayload = {
   plategaMerchantId?: string | null;
   plategaSecret?: string | null;
   plategaMethods?: string | null;
+  yoomoneyClientId?: string | null;
+  yoomoneyClientSecret?: string | null;
+  yoomoneyReceiverWallet?: string | null;
+  yoomoneyNotificationSecret?: string | null;
   botButtons?: string | null;
   botEmojis?: Record<string, { unicode?: string; tgEmojiId?: string }> | string | null;
   botBackLabel?: string | null;
@@ -546,6 +667,10 @@ export interface AdminSettings {
   plategaMerchantId?: string | null;
   plategaSecret?: string | null;
   plategaMethods?: { id: number; enabled: boolean; label: string }[];
+  yoomoneyClientId?: string | null;
+  yoomoneyClientSecret?: string | null;
+  yoomoneyReceiverWallet?: string | null;
+  yoomoneyNotificationSecret?: string | null;
   /** Кнопки главного меню бота: порядок, видимость, текст, стиль, ключ эмодзи (TRIAL, PACKAGE, …) */
   botButtons?: { id: string; visible: boolean; label: string; order: number; style?: string; emojiKey?: string }[];
   /** Эмодзи по ключам: Unicode и/или TG custom emoji ID (премиум). Ключи: TRIAL, PACKAGE, CARD, LINK, SERVERS, … */
@@ -565,6 +690,10 @@ export interface AdminSettings {
   instructionsLink?: string | null;
   /** Глобальная цветовая тема */
   themeAccent?: string;
+  /** Принудительная подписка на канал/группу */
+  forceSubscribeEnabled?: boolean;
+  forceSubscribeChannelId?: string | null;
+  forceSubscribeMessage?: string | null;
 }
 
 /** Конфиг страницы подписки (формат как sub.stealthnet.app) */
@@ -714,6 +843,8 @@ export interface ClientProfile {
   remnawaveUuid: string | null;
   trialUsed: boolean;
   isBlocked: boolean;
+  /** Кошелёк ЮMoney подключён (токен сохранён) */
+  yoomoneyConnected?: boolean;
 }
 
 export interface ClientAuthResponse {
@@ -866,6 +997,7 @@ export interface PublicConfig {
   publicAppUrl?: string | null;
   telegramBotUsername?: string | null;
   plategaMethods?: { id: number; label: string }[];
+  yoomoneyEnabled?: boolean;
   trialEnabled?: boolean;
   trialDays?: number;
   themeAccent?: string;

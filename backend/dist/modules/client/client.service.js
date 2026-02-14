@@ -39,6 +39,7 @@ const SYSTEM_CONFIG_KEYS = [
     "category_emojis", // JSON: { "ordinary": "📦", "premium": "⭐" } — эмодзи категорий по коду
     "subscription_page_config",
     "support_link", "agreement_link", "offer_link", "instructions_link", // Поддержка: тех поддержка, соглашения, оферта, инструкции
+    "theme_accent", // Глобальная цветовая тема: default, blue, violet, rose, orange, green, emerald, cyan, amber, red, pink, indigo
 ];
 const DEFAULT_BOT_BUTTONS = [
     { id: "tariffs", visible: true, label: "📦 Тарифы", order: 0, style: "success" },
@@ -225,6 +226,7 @@ export async function getSystemConfig() {
         agreementLink: (map.agreement_link ?? "").trim() || null,
         offerLink: (map.offer_link ?? "").trim() || null,
         instructionsLink: (map.instructions_link ?? "").trim() || null,
+        themeAccent: (map.theme_accent ?? "").trim() || "default",
     };
 }
 function parseCategoryEmojis(raw) {
@@ -343,6 +345,7 @@ export async function getPublicConfig() {
         agreementLink: full.agreementLink ?? null,
         offerLink: full.offerLink ?? null,
         instructionsLink: full.instructionsLink ?? null,
+        themeAccent: full.themeAccent ?? "default",
     };
 }
 //# sourceMappingURL=client.service.js.map

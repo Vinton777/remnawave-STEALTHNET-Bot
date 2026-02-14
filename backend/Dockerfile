@@ -9,6 +9,8 @@ RUN npm run build
 
 FROM node:20-alpine
 
+RUN apk add --no-cache postgresql-client
+
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /app/dist ./dist

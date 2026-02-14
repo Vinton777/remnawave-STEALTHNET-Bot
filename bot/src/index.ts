@@ -36,6 +36,59 @@ const bot = new Bot(BOT_TOKEN);
 
 let BOT_USERNAME = "";
 
+// ——— Принудительная подписка на канал ———
+
+/** Проверяет, подписан ли пользователь на указанный канал/группу. */
+async function isUserSubscribed(userId: number, channelId: string): Promise<boolean> {
+  try {
+    const member = await bot.api.getChatMember(channelId, userId);
+    // member, administrator, creator — подписан; left, kicked — нет
+    return ["member", "administrator", "creator", "restricted"].includes(member.status);
+  } catch (e: unknown) {
+    // Если бот не админ в канале или канал не найден — считаем что проверка невозможна, пропускаем
+    console.warn("getChatMember error:", e instanceof Error ? e.message : e);
+    return true; // не блокируем если не можем проверить
+  }
+}
+
+/** Генерирует клавиатуру «Подписаться + Проверить подписку» */
+function subscribeKeyboard(channelId: string): InlineMarkup {
+  const channelUrl = channelId.startsWith("@")
+    ? `https://t.me/${channelId.slice(1)}`
+    : channelId.startsWith("-100")
+      ? `https://t.me/c/${channelId.slice(4)}`
+      : `https://t.me/${channelId}`;
+  return {
+    inline_keyboard: [
+      [{ text: "📢 Подписаться на канал", url: channelUrl }],
+      [{ text: "✅ Я подписался", callback_data: "check_subscribe" }],
+    ],
+  };
+}
+
+/**
+ * Проверяет подписку и, если не подписан, отправляет/редактирует сообщение.
+ * Возвращает true если НЕ подписан (нужно прервать обработку).
+ */
+async function enforceSubscription(
+  ctx: {
+    from?: { id: number };
+    reply: (text: string, opts?: { reply_markup?: InlineMarkup }) => Promise<unknown>;
+  },
+  config: Awaited<ReturnType<typeof api.getPublicConfig>>,
+): Promise<boolean> {
+  if (!config?.forceSubscribeEnabled) return false;
+  const channelId = config.forceSubscribeChannelId?.trim();
+  if (!channelId) return false;
+  const userId = ctx.from?.id;
+  if (!userId) return false;
+  const subscribed = await isUserSubscribed(userId, channelId);
+  if (subscribed) return false;
+  const msg = config.forceSubscribeMessage?.trim() || "Для использования бота подпишитесь на наш канал:";
+  await ctx.reply(`⚠️ ${msg}`, { reply_markup: subscribeKeyboard(channelId) });
+  return true;
+}
+
 type TariffItem = { id: string; name: string; price: number; currency: string };
 type TariffCategory = { id: string; name: string; emoji?: string; emojiKey?: string | null; tariffs: TariffItem[] };
 
@@ -351,6 +404,9 @@ bot.command("start", async (ctx) => {
       }
     }
 
+    // Проверка подписки на канал
+    if (await enforceSubscription(ctx, config)) return;
+
     const subRes = await api.getSubscription(auth.token).catch(() => ({ subscription: null }));
     const vpnUrl = getSubscriptionUrl(subRes.subscription);
     const showTrial = Boolean(config?.trialEnabled && !client.trialUsed);
@@ -404,6 +460,33 @@ bot.on("callback_query:data", async (ctx) => {
 
   try {
     const config = await api.getPublicConfig();
+
+    // Обработка кнопки «Я подписался»
+    if (data === "check_subscribe") {
+      const channelId = config?.forceSubscribeChannelId?.trim();
+      if (channelId && config?.forceSubscribeEnabled) {
+        const subscribed = await isUserSubscribed(userId, channelId);
+        if (!subscribed) {
+          await ctx.answerCallbackQuery({ text: "❌ Вы ещё не подписались на канал", show_alert: true }).catch(() => {});
+          return;
+        }
+      }
+      // Подписан — показываем основное меню через /start
+      await ctx.answerCallbackQuery({ text: "✅ Подписка подтверждена!" }).catch(() => {});
+      await ctx.reply("Отлично! Отправьте /start чтобы открыть меню.");
+      return;
+    }
+
+    // Проверка подписки на канал для всех действий
+    if (config?.forceSubscribeEnabled && config.forceSubscribeChannelId?.trim()) {
+      const subscribed = await isUserSubscribed(userId, config.forceSubscribeChannelId.trim());
+      if (!subscribed) {
+        const msg = config.forceSubscribeMessage?.trim() || "Для использования бота подпишитесь на наш канал:";
+        await editMessageContent(ctx, `⚠️ ${msg}`, subscribeKeyboard(config.forceSubscribeChannelId.trim()));
+        return;
+      }
+    }
+
     const appUrl = config?.publicAppUrl?.replace(/\/$/, "") ?? null;
     const rawStyles = config?.botInnerButtonStyles;
     const innerStyles = {
@@ -523,6 +606,29 @@ bot.on("callback_query:data", async (ctx) => {
       return;
     }
 
+    if (data.startsWith("pay_tariff_yoomoney:")) {
+      const tariffId = data.slice("pay_tariff_yoomoney:".length);
+      const { items } = await api.getPublicTariffs();
+      const tariff = items?.flatMap((c: TariffCategory) => c.tariffs).find((t: TariffItem) => t.id === tariffId);
+      if (!tariff) {
+        await editMessageContent(ctx, "Тариф не найден.", backToMenu(config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds));
+        return;
+      }
+      try {
+        const payment = await api.createYoomoneyPayment(token, {
+          amount: tariff.price,
+          paymentType: "AC",
+          tariffId: tariff.id,
+        });
+        const yooTitle = titleWithEmoji("CARD", `Оплата: ${tariff.name} — ${formatMoney(tariff.price, tariff.currency)}\n\nНажмите кнопку ниже для оплаты через ЮMoney:`, config?.botEmojis);
+        await editMessageContent(ctx, yooTitle.text, payUrlMarkup(payment.paymentUrl, config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds), yooTitle.entities);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "Ошибка создания платежа ЮMoney";
+        await editMessageContent(ctx, `❌ ${msg}`, backToMenu(config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds));
+      }
+      return;
+    }
+
     if (data.startsWith("pay_tariff:")) {
       const rest = data.slice("pay_tariff:".length);
       const parts = rest.split(":");
@@ -552,7 +658,7 @@ bot.on("callback_query:data", async (ctx) => {
       }
       // Показываем способы оплаты (всегда, чтобы была кнопка баланса)
       const pay2 = titleWithEmoji("CARD", `Оплата: ${tariff.name} — ${formatMoney(tariff.price, tariff.currency)}\n\nВыберите способ оплаты:`, config?.botEmojis);
-      await editMessageContent(ctx, pay2.text, tariffPaymentMethodButtons(tariffId, methods, config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds, balanceLabel), pay2.entities);
+      await editMessageContent(ctx, pay2.text, tariffPaymentMethodButtons(tariffId, methods, config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds, balanceLabel, !!config?.yoomoneyEnabled, tariff.currency), pay2.entities);
       return;
     }
 
@@ -598,12 +704,35 @@ bot.on("callback_query:data", async (ctx) => {
     if (data === "menu:topup") {
       const client = await api.getMe(token);
       const methods = config?.plategaMethods ?? [];
-      if (!methods.length) {
+      const yooEnabled = !!config?.yoomoneyEnabled;
+      if (!methods.length && !yooEnabled) {
         await editMessageContent(ctx, "Пополнение временно недоступно.", backToMenu(config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds));
         return;
       }
       const topupTitle = titleWithEmoji("CARD", "Пополнить баланс\n\nВыберите сумму или введите свою (числом):", config?.botEmojis);
       await editMessageContent(ctx, topupTitle.text, topUpPresets(client.preferredCurrency, config?.botBackLabel ?? null, innerStyles, innerEmojiIds), topupTitle.entities);
+      return;
+    }
+
+    if (data.startsWith("topup_yoomoney:")) {
+      const amountStr = data.slice("topup_yoomoney:".length);
+      const amount = Number(amountStr);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        await editMessageContent(ctx, "Неверная сумма.", backToMenu(config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds));
+        return;
+      }
+      const client = await api.getMe(token);
+      try {
+        const payment = await api.createYoomoneyPayment(token, {
+          amount,
+          paymentType: "AC",
+        });
+        const yooTopup = titleWithEmoji("CARD", `Пополнение на ${formatMoney(amount, client.preferredCurrency)}\n\nНажмите кнопку ниже для оплаты через ЮMoney:`, config?.botEmojis);
+        await editMessageContent(ctx, yooTopup.text, payUrlMarkup(payment.paymentUrl, config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds), yooTopup.entities);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "Ошибка создания платежа ЮMoney";
+        await editMessageContent(ctx, `❌ ${msg}`, backToMenu(config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds));
+      }
       return;
     }
 
@@ -630,9 +759,22 @@ bot.on("callback_query:data", async (ctx) => {
         await editMessageContent(ctx, topupPay1.text, payUrlMarkup(payment.paymentUrl, config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds), topupPay1.entities);
         return;
       }
-      if (methods.length > 1) {
+      const yooEnabled = !!config?.yoomoneyEnabled;
+      if (methods.length > 1 || (methods.length >= 1 && yooEnabled)) {
         const topupPay2 = titleWithEmoji("CARD", `Пополнение на ${formatMoney(amount, client.preferredCurrency)}\n\nВыберите способ оплаты:`, config?.botEmojis);
-        await editMessageContent(ctx, topupPay2.text, topupPaymentMethodButtons(amountStr, methods, config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds), topupPay2.entities);
+        await editMessageContent(ctx, topupPay2.text, topupPaymentMethodButtons(amountStr, methods, config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds, yooEnabled), topupPay2.entities);
+        return;
+      }
+      // Если ЮMoney единственный способ (нет platega methods) — сразу создаём платёж ЮMoney
+      if (methods.length === 0 && yooEnabled) {
+        try {
+          const payment = await api.createYoomoneyPayment(token, { amount, paymentType: "AC" });
+          const yooTopup = titleWithEmoji("CARD", `Пополнение на ${formatMoney(amount, client.preferredCurrency)}\n\nНажмите кнопку ниже для оплаты через ЮMoney:`, config?.botEmojis);
+          await editMessageContent(ctx, yooTopup.text, payUrlMarkup(payment.paymentUrl, config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds), yooTopup.entities);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : "Ошибка создания платежа ЮMoney";
+          await editMessageContent(ctx, `❌ ${msg}`, backToMenu(config?.botBackLabel ?? null, innerStyles?.back, innerEmojiIds));
+        }
         return;
       }
       const methodId = methods[0]?.id ?? 2;
@@ -764,7 +906,8 @@ bot.on("message:text", async (ctx) => {
   try {
     const config = await api.getPublicConfig();
     const methods = config?.plategaMethods ?? [];
-    if (!methods.length) {
+    const yooEnabled = !!config?.yoomoneyEnabled;
+    if (!methods.length && !yooEnabled) {
       await ctx.reply("Пополнение временно недоступно.");
       return;
     }
@@ -782,11 +925,21 @@ bot.on("message:text", async (ctx) => {
           connect: botEmojis.SERVERS?.tgEmojiId || botEmojis.CONNECT?.tgEmojiId,
         }
       : undefined;
-    if (methods.length > 1) {
+    if (methods.length > 1 || (methods.length >= 1 && yooEnabled)) {
       const topupMsg1 = titleWithEmoji("CARD", `Пополнение на ${formatMoney(num, client.preferredCurrency)}\n\nВыберите способ оплаты:`, config?.botEmojis);
       await ctx.reply(topupMsg1.text, {
         entities: topupMsg1.entities.length ? topupMsg1.entities : undefined,
-        reply_markup: topupPaymentMethodButtons(String(num), methods, config?.botBackLabel ?? null, backStyle, msgEmojiIds),
+        reply_markup: topupPaymentMethodButtons(String(num), methods, config?.botBackLabel ?? null, backStyle, msgEmojiIds, yooEnabled),
+      });
+      return;
+    }
+    // Если только ЮMoney (нет platega methods) — сразу создаём
+    if (methods.length === 0 && yooEnabled) {
+      const payment = await api.createYoomoneyPayment(token, { amount: num, paymentType: "AC" });
+      const topupMsgYoo = titleWithEmoji("CARD", `Пополнение на ${formatMoney(num, client.preferredCurrency)}\n\nНажмите кнопку ниже для оплаты через ЮMoney:`, config?.botEmojis);
+      await ctx.reply(topupMsgYoo.text, {
+        entities: topupMsgYoo.entities.length ? topupMsgYoo.entities : undefined,
+        reply_markup: payUrlMarkup(payment.paymentUrl, config?.botBackLabel ?? null, backStyle, msgEmojiIds),
       });
       return;
     }

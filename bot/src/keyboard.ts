@@ -268,7 +268,7 @@ export function tariffPayButtons(
   return tariffCategoryButtons(categories, backLabel, innerStyles, emojiIds);
 }
 
-/** Кнопки выбора способа оплаты (СПБ, Карты и т.д. из админки) для тарифа + баланс */
+/** Кнопки выбора способа оплаты (СПБ, Карты и т.д. из админки) для тарифа + баланс + ЮMoney */
 export function tariffPaymentMethodButtons(
   tariffId: string,
   methods: { id: number; label: string }[],
@@ -276,6 +276,8 @@ export function tariffPaymentMethodButtons(
   backStyle?: string,
   emojiIds?: InnerEmojiIds,
   balanceLabel?: string | null,
+  yoomoneyEnabled?: boolean,
+  tariffCurrency?: string,
 ): InlineMarkup {
   const back = (backLabel && backLabel.trim()) || DEFAULT_BACK_LABEL;
   const backSty = resolveStyle(toStyle(backStyle), "danger");
@@ -285,6 +287,10 @@ export function tariffPaymentMethodButtons(
   if (balanceLabel) {
     rows.push([btn(balanceLabel, `pay_tariff_balance:${tariffId}`, "success", cardId)]);
   }
+  // ЮMoney — только для рублёвых тарифов
+  if (yoomoneyEnabled && (!tariffCurrency || tariffCurrency.toUpperCase() === "RUB")) {
+    rows.push([btn("💳 ЮMoney — оплата картой", `pay_tariff_yoomoney:${tariffId}`, "primary", cardId)]);
+  }
   for (const m of methods) {
     rows.push([btn(m.label, `pay_tariff:${tariffId}:${m.id}`, "primary", cardId)]);
   }
@@ -292,18 +298,25 @@ export function tariffPaymentMethodButtons(
   return { inline_keyboard: rows };
 }
 
-/** Кнопки выбора способа оплаты для пополнения на сумму */
+/** Кнопки выбора способа оплаты для пополнения на сумму + ЮMoney */
 export function topupPaymentMethodButtons(
   amount: string,
   methods: { id: number; label: string }[],
   backLabel?: string | null,
   backStyle?: string,
-  emojiIds?: InnerEmojiIds
+  emojiIds?: InnerEmojiIds,
+  yoomoneyEnabled?: boolean,
 ): InlineMarkup {
   const back = (backLabel && backLabel.trim()) || DEFAULT_BACK_LABEL;
   const backSty = resolveStyle(toStyle(backStyle), "danger");
   const cardId = emojiIds?.card;
-  const rows: InlineButton[][] = methods.map((m) => [btn(m.label, `topup:${amount}:${m.id}`, "primary", cardId)]);
+  const rows: InlineButton[][] = [];
+  if (yoomoneyEnabled) {
+    rows.push([btn("💳 ЮMoney — оплата картой", `topup_yoomoney:${amount}`, "primary", cardId)]);
+  }
+  for (const m of methods) {
+    rows.push([btn(m.label, `topup:${amount}:${m.id}`, "primary", cardId)]);
+  }
   rows.push([btn(back, "menu:topup", backSty, emojiIds?.back)]);
   return { inline_keyboard: rows };
 }

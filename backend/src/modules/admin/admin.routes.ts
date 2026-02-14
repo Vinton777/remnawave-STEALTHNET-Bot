@@ -37,6 +37,7 @@ import { getSystemConfig } from "../client/client.service.js";
 import { syncFromRemna, syncToRemna, createRemnaUsersForClientsWithoutUuid } from "../sync/sync.service.js";
 import { distributeReferralRewards } from "../referral/referral.service.js";
 import { activateTariffByPaymentId } from "../tariff/tariff-activation.service.js";
+import { registerBackupRoutes } from "../backup/backup.routes.js";
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth);
@@ -49,6 +50,8 @@ function asyncRoute(
     Promise.resolve(fn(req, res)).catch(next);
   };
 }
+
+registerBackupRoutes(adminRouter, asyncRoute);
 
 adminRouter.get("/me", asyncRoute(async (req, res) => {
   const adminId = (req as unknown as { adminId: string }).adminId;
@@ -232,10 +235,24 @@ adminRouter.patch("/payments/:id", asyncRoute(async (req, res) => {
     return res.json({ payment: { ...payment, status: "PAID" }, referral: result });
   }
   const now = new Date();
-  await prisma.payment.update({
-    where: { id: paymentId },
-    data: { status: "PAID", paidAt: now },
-  });
+  const isTopUp = (payment.provider === "yoomoney_form" || payment.provider === "platega") && !payment.tariffId;
+  if (isTopUp) {
+    await prisma.$transaction([
+      prisma.payment.update({
+        where: { id: paymentId },
+        data: { status: "PAID", paidAt: now },
+      }),
+      prisma.client.update({
+        where: { id: payment.clientId },
+        data: { balance: { increment: payment.amount } },
+      }),
+    ]);
+  } else {
+    await prisma.payment.update({
+      where: { id: paymentId },
+      data: { status: "PAID", paidAt: now },
+    });
+  }
 
   // Активируем тариф в Remnawave
   let activation: { ok: boolean; error?: string } = { ok: false, error: "no tariff" };
@@ -245,7 +262,7 @@ adminRouter.patch("/payments/:id", asyncRoute(async (req, res) => {
 
   const result = await distributeReferralRewards(paymentId);
   const updated = await prisma.payment.findUnique({ where: { id: paymentId } });
-  return res.json({ payment: updated, referral: result, activation });
+  return res.json({ payment: updated, referral: result, activation, balanceCredited: isTopUp });
 }));
 
 /** Сериализация тарифа для JSON (BigInt → number) */
@@ -793,6 +810,10 @@ const updateSettingsSchema = z.object({
   plategaMerchantId: z.string().max(200).nullable().optional(),
   plategaSecret: z.string().max(500).nullable().optional(),
   plategaMethods: z.string().max(2000).nullable().optional(),
+  yoomoneyClientId: z.string().max(200).nullable().optional(),
+  yoomoneyClientSecret: z.string().max(500).nullable().optional(),
+  yoomoneyReceiverWallet: z.string().max(50).nullable().optional(),
+  yoomoneyNotificationSecret: z.string().max(500).nullable().optional(),
   botButtons: z.string().max(10000).nullable().optional(),
   botEmojis: z.union([z.string().max(15000), z.record(z.object({ unicode: z.string().max(20).optional(), tgEmojiId: z.string().max(50).optional() }))]).nullable().optional(),
   botBackLabel: z.string().max(200).nullable().optional(),
@@ -804,6 +825,9 @@ const updateSettingsSchema = z.object({
   offerLink: z.string().max(2000).nullable().optional(),
   instructionsLink: z.string().max(2000).nullable().optional(),
   themeAccent: z.string().max(50).optional(),
+  forceSubscribeEnabled: z.boolean().optional(),
+  forceSubscribeChannelId: z.string().max(200).nullable().optional(),
+  forceSubscribeMessage: z.string().max(1000).nullable().optional(),
 });
 
 adminRouter.patch("/settings", async (req, res) => {
@@ -988,6 +1012,22 @@ adminRouter.patch("/settings", async (req, res) => {
     const val = updates.plategaMethods ?? "";
     await prisma.systemSetting.upsert({ where: { key: "platega_methods" }, create: { key: "platega_methods", value: val }, update: { value: val } });
   }
+  if (updates.yoomoneyClientId !== undefined) {
+    const val = updates.yoomoneyClientId ?? "";
+    await prisma.systemSetting.upsert({ where: { key: "yoomoney_client_id" }, create: { key: "yoomoney_client_id", value: val }, update: { value: val } });
+  }
+  if (updates.yoomoneyClientSecret !== undefined) {
+    const val = updates.yoomoneyClientSecret ?? "";
+    await prisma.systemSetting.upsert({ where: { key: "yoomoney_client_secret" }, create: { key: "yoomoney_client_secret", value: val }, update: { value: val } });
+  }
+  if (updates.yoomoneyReceiverWallet !== undefined) {
+    const val = updates.yoomoneyReceiverWallet ?? "";
+    await prisma.systemSetting.upsert({ where: { key: "yoomoney_receiver_wallet" }, create: { key: "yoomoney_receiver_wallet", value: val }, update: { value: val } });
+  }
+  if (updates.yoomoneyNotificationSecret !== undefined) {
+    const val = updates.yoomoneyNotificationSecret ?? "";
+    await prisma.systemSetting.upsert({ where: { key: "yoomoney_notification_secret" }, create: { key: "yoomoney_notification_secret", value: val }, update: { value: val } });
+  }
   if (updates.botButtons !== undefined) {
     const val = updates.botButtons ?? "";
     await prisma.systemSetting.upsert({ where: { key: "bot_buttons" }, create: { key: "bot_buttons", value: val }, update: { value: val } });
@@ -1053,6 +1093,18 @@ adminRouter.patch("/settings", async (req, res) => {
         update: { value: String(val).trim() },
       });
     }
+  }
+  if (updates.forceSubscribeEnabled !== undefined) {
+    const val = updates.forceSubscribeEnabled ? "true" : "false";
+    await prisma.systemSetting.upsert({ where: { key: "force_subscribe_enabled" }, create: { key: "force_subscribe_enabled", value: val }, update: { value: val } });
+  }
+  if (updates.forceSubscribeChannelId !== undefined) {
+    const val = (updates.forceSubscribeChannelId ?? "").trim();
+    await prisma.systemSetting.upsert({ where: { key: "force_subscribe_channel_id" }, create: { key: "force_subscribe_channel_id", value: val }, update: { value: val } });
+  }
+  if (updates.forceSubscribeMessage !== undefined) {
+    const val = (updates.forceSubscribeMessage ?? "").trim();
+    await prisma.systemSetting.upsert({ where: { key: "force_subscribe_message" }, create: { key: "force_subscribe_message", value: val }, update: { value: val } });
   }
   const config = await getSystemConfig();
   return res.json(config);

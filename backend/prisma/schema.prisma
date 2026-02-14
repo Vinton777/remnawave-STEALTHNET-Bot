@@ -61,6 +61,7 @@ model Client {
   blockReason      String?   @map("block_reason")
   referralPercent  Float?   @map("referral_percent")
   trialUsed        Boolean   @default(false) @map("trial_used")
+  yoomoneyAccessToken String? @map("yoomoney_access_token")
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 

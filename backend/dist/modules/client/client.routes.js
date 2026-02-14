@@ -117,11 +117,12 @@ clientAuthRouter.post("/register", async (req, res) => {
     if (isRemnaConfigured()) {
         const rawName = data.email?.split("@")[0] || `tg${data.telegramId}`;
         const username = rawName.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 36) || "user_" + Date.now().toString(36);
+        // Пользователь без активной подписки — доступ после триала или оплаты
         const remnaBody = {
             username: username.length >= 3 ? username : "u_" + username,
             trafficLimitBytes: 0,
             trafficLimitStrategy: "NO_RESET",
-            expireAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            expireAt: new Date(Date.now() - 1000).toISOString(),
         };
         if (data.telegramId) {
             const tid = parseInt(data.telegramId, 10);
@@ -186,7 +187,7 @@ clientAuthRouter.post("/verify-email", async (req, res) => {
             username: username.length >= 3 ? username : "u_" + username,
             trafficLimitBytes: 0,
             trafficLimitStrategy: "NO_RESET",
-            expireAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            expireAt: new Date(Date.now() - 1000).toISOString(),
         });
         remnawaveUuid = extractRemnaUuid(remnaRes.data);
         if (remnaRes.error || remnawaveUuid == null) {
