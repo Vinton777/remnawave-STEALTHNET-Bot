@@ -89,7 +89,7 @@ configure_env() {
   echo ""
 
   # Домен
-  ask "Введите домен StealthNet панели (например web.example.com), не Remnawave панели!" "" DOMAIN
+  ask "Введите домен (например panel.example.com)" "" DOMAIN
   while [ -z "$DOMAIN" ]; do
     warn "Домен обязателен!"
     ask "Введите домен" "" DOMAIN
@@ -100,13 +100,15 @@ configure_env() {
   ask "Имя базы данных" "stealthnet" POSTGRES_DB
   ask "Пользователь БД" "stealthnet" POSTGRES_USER
 
-  # Генерируем пароль по умолчанию
-  DEFAULT_PG_PASS=$(openssl rand -base64 16 2>/dev/null || head -c 24 /dev/urandom | base64)
+  # Генерируем пароль без =, +, / — иначе ломается .env и DATABASE_URL
+  DEFAULT_PG_PASS=$(openssl rand -base64 18 2>/dev/null | tr -d $'=+/\n' | head -c 24)
+  [ -z "$DEFAULT_PG_PASS" ] && DEFAULT_PG_PASS=$(head -c 24 /dev/urandom | base64 | tr -d $'=+/\n' | head -c 24)
   ask_secret "Пароль БД (Enter = сгенерировать)" "$DEFAULT_PG_PASS" POSTGRES_PASSWORD
 
   echo ""
   echo -e "${BOLD}${CYAN}── JWT ──${NC}"
-  DEFAULT_JWT=$(openssl rand -base64 32 2>/dev/null || head -c 48 /dev/urandom | base64)
+  DEFAULT_JWT=$(openssl rand -base64 36 2>/dev/null | tr -d $'=+/\n' | head -c 48)
+  [ -z "$DEFAULT_JWT" ] && DEFAULT_JWT=$(head -c 48 /dev/urandom | base64 | tr -d $'=+/\n' | head -c 48)
   ask_secret "JWT Secret (Enter = сгенерировать)" "$DEFAULT_JWT" JWT_SECRET
   ask "Время жизни access-токена" "15m" JWT_ACCESS_EXPIRES_IN
   ask "Время жизни refresh-токена" "7d" JWT_REFRESH_EXPIRES_IN
@@ -114,7 +116,8 @@ configure_env() {
   echo ""
   echo -e "${BOLD}${CYAN}── Админ ──${NC}"
   ask "Email администратора" "admin@stealthnet.local" INIT_ADMIN_EMAIL
-  DEFAULT_ADMIN_PASS=$(openssl rand -base64 12 2>/dev/null || head -c 16 /dev/urandom | base64)
+  DEFAULT_ADMIN_PASS=$(openssl rand -base64 14 2>/dev/null | tr -d $'=+/\n' | head -c 20)
+  [ -z "$DEFAULT_ADMIN_PASS" ] && DEFAULT_ADMIN_PASS=$(head -c 20 /dev/urandom | base64 | tr -d $'=+/\n' | head -c 20)
   ask_secret "Пароль админа (Enter = сгенерировать)" "$DEFAULT_ADMIN_PASS" INIT_ADMIN_PASSWORD
 
   echo ""
