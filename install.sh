@@ -25,7 +25,7 @@ banner() {
   echo "  ╚════██║   ██║   ██╔══╝  ██╔══██║██║     ██║   ██╔══██║"
   echo "  ███████║   ██║   ███████╗██║  ██║███████╗██║   ██║  ██║"
   echo "  ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝   ╚═╝  ╚═╝"
-  echo -e "                         ${YELLOW}v3.0.1${NC}"
+  echo -e "                         ${YELLOW}v3.0.2${NC}"
   echo -e "  ${NC}github.com/STEALTHNET-APP/remnawave-STEALTHNET-Bot${NC}"
   echo ""
 }

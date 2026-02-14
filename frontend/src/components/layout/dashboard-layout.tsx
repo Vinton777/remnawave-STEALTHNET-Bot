@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 
-const PANEL_VERSION = "3.0.1";
+const PANEL_VERSION = "3.0.2";
 const GITHUB_URL = "https://github.com/STEALTHNET-APP/remnawave-STEALTHNET-Bot";
 
 const nav = [

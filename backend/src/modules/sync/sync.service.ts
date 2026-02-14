@@ -216,7 +216,7 @@ export async function createRemnaUsersForClientsWithoutUuid(): Promise<{
           username: finalUsername,
           trafficLimitBytes: 0,
           trafficLimitStrategy: "NO_RESET",
-          expireAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          expireAt: new Date(Date.now() - 1000).toISOString(),
           ...(c.telegramId && { telegramId: parseInt(c.telegramId, 10) }),
           ...(c.email && { email: c.email }),
         });
