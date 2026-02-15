@@ -936,6 +936,7 @@ clientRouter.post("/payments/platega", async (req, res) => {
     return res.status(400).json({ message: "Метод оплаты недоступен" });
   }
 
+  const serviceName = config.serviceName?.trim() || "STEALTHNET";
   const orderId = randomUUID();
   const paymentKind = tariffIdToStore ? "tariff" : "topup";
   const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
@@ -945,6 +946,9 @@ clientRouter.post("/payments/platega", async (req, res) => {
   const failedUrl = appUrl
     ? `${appUrl}/cabinet/dashboard?payment=failed&payment_kind=${paymentKind}&oid=${orderId}`
     : "";
+  const plategaDescription = tariffIdToStore
+    ? `Тариф ${serviceName} #${orderId}`
+    : `Пополнение баланса ${serviceName} #${orderId}`;
 
   const payment = await prisma.payment.create({
     data: {
@@ -966,7 +970,7 @@ clientRouter.post("/payments/platega", async (req, res) => {
     paymentMethod,
     returnUrl,
     failedUrl,
-    description,
+    description: plategaDescription,
   });
 
   if ("error" in result) {
@@ -1110,6 +1114,7 @@ clientRouter.post("/yoomoney/request-topup", async (req, res) => {
   const receiver = config.yoomoneyReceiverWallet?.trim();
   if (!receiver) return res.status(503).json({ message: "ЮMoney не настроен" });
 
+  const serviceName = config.serviceName?.trim() || "STEALTHNET";
   const amountRounded = Math.round(amount * 100) / 100;
   const orderId = randomUUID();
   const payment = await prisma.payment.create({
@@ -1128,7 +1133,7 @@ clientRouter.post("/yoomoney/request-topup", async (req, res) => {
     to: receiver,
     amount_due: amountRounded,
     label: payment.id,
-    message: `Пополнение баланса STEALTHNET. Заказ ${orderId}`,
+    message: `Пополнение баланса ${serviceName}. Заказ ${orderId}`,
     comment: `Пополнение баланса`,
   });
 
@@ -1230,9 +1235,10 @@ clientRouter.post("/yoomoney/create-form-payment", async (req, res) => {
     },
   });
 
+  const serviceName = config.serviceName?.trim() || "STEALTHNET";
   const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
   const successURL = appUrl ? `${appUrl}/cabinet?yoomoney_form=success` : "";
-  const targets = tariffIdToStore ? `Тариф STEALTHNET #${orderId}` : `Пополнение баланса STEALTHNET #${orderId}`;
+  const targets = tariffIdToStore ? `Тариф ${serviceName} #${orderId}` : `Пополнение баланса ${serviceName} #${orderId}`;
   const params = new URLSearchParams({
     receiver,
     "quickpay-form": "shop",
@@ -1340,11 +1346,12 @@ clientRouter.post("/yookassa/create-payment", async (req, res) => {
       },
     });
 
+    const serviceName = config.serviceName?.trim() || "STEALTHNET";
     const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
     const returnUrl = appUrl ? `${appUrl}/cabinet?yookassa=success` : "";
     const description = tariffIdToStore
-      ? `Тариф STEALTHNET #${orderId}`
-      : `Пополнение баланса STEALTHNET #${orderId}`;
+      ? `Тариф ${serviceName} #${orderId}`
+      : `Пополнение баланса ${serviceName} #${orderId}`;
 
     const result = await createYookassaPayment({
       shopId,
