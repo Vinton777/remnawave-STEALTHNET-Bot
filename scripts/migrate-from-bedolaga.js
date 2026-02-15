@@ -479,7 +479,7 @@ async function migrate() {
 
     log(
       "📊",
-      `Реф. начисления: ${stats.referralCredits.migrated} создано, ${stats.referralCredits.errors} ошибок`
+      `Реф. бонусы: ${stats.referralCredits.migrated} создано, ${stats.referralCredits.errors} ошибок`
     );
 
     // ─── 6. SETTINGS ─────────────────────────────────────────
