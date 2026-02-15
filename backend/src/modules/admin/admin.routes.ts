@@ -653,7 +653,29 @@ const remnaUpdateBodySchema = z.object({
   expireAt: z.string().datetime().optional(),
   activeInternalSquads: z.array(z.string().uuid()).optional(),
   status: z.enum(["ACTIVE", "DISABLED"]).optional(),
+  telegramId: z.number().int().nullable().optional(),
+  email: z.string().email().nullable().optional(),
 });
+
+/** Извлечь из ответа Remna getUser: activeInternalSquads (uuid[]), telegramId, email — чтобы не затирать при PATCH. */
+function getRemnaUserFieldsForMerge(data: unknown): { activeInternalSquads: string[]; telegramId?: number; email?: string | null } {
+  if (!data || typeof data !== "object") return { activeInternalSquads: [] };
+  const o = data as Record<string, unknown>;
+  const resp = (o.response ?? o) as Record<string, unknown> | undefined;
+  const ais = resp?.activeInternalSquads;
+  const squads: string[] = [];
+  if (Array.isArray(ais)) {
+    for (const s of ais) {
+      const u = (s && typeof s === "object" && "uuid" in s) ? (s as Record<string, unknown>).uuid : s;
+      if (typeof u === "string") squads.push(u);
+    }
+  }
+  return {
+    activeInternalSquads: squads,
+    ...(typeof resp?.telegramId === "number" && { telegramId: resp.telegramId }),
+    ...(resp?.email !== undefined && { email: resp.email != null ? String(resp.email) : null }),
+  };
+}
 
 adminRouter.patch("/clients/:id/remna", async (req, res) => {
   const parsed = clientIdParam.safeParse(req.params);
@@ -662,7 +684,15 @@ adminRouter.patch("/clients/:id/remna", async (req, res) => {
   if (!remnaUuid) return res.status(400).json({ message: "Клиент не привязан к Remna" });
   const body = remnaUpdateBodySchema.safeParse(req.body);
   if (!body.success) return res.status(400).json({ message: "Invalid input", errors: body.error.flatten() });
-  const result = await remnaUpdateUser({ uuid: remnaUuid, ...body.data });
+  const getRes = await remnaGetUser(remnaUuid);
+  if (getRes.error) return res.status(getRes.status >= 400 ? getRes.status : 500).json({ message: getRes.error });
+  const current = getRemnaUserFieldsForMerge(getRes.data);
+  const patchBody: Record<string, unknown> = { uuid: remnaUuid };
+  if (body.data.activeInternalSquads === undefined && current.activeInternalSquads.length > 0) patchBody.activeInternalSquads = current.activeInternalSquads;
+  if (body.data.telegramId === undefined && current.telegramId !== undefined) patchBody.telegramId = current.telegramId;
+  if (body.data.email === undefined && current.email !== undefined) patchBody.email = current.email;
+  Object.assign(patchBody, body.data);
+  const result = await remnaUpdateUser(patchBody);
   if (result.error) return res.status(result.status >= 400 ? result.status : 500).json({ message: result.error });
   return res.json(result.data ?? {});
 });

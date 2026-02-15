@@ -6,6 +6,7 @@ import { prisma } from "../../db.js";
 import {
   isRemnaConfigured,
   remnaGetUsers,
+  remnaGetUser,
   remnaUpdateUser,
   remnaCreateUser,
   remnaGetUserByTelegramId,
@@ -135,13 +136,50 @@ export async function syncFromRemna(): Promise<{
   return { ok: result.errors.length === 0, ...result };
 }
 
-/** Синхронизация в Remna: отправляем данные наших клиентов (telegramId, email) в Remna. */
+/** Извлечь массив UUID сквадов из ответа Remna (getUser). */
+function extractActiveInternalSquads(data: unknown): string[] {
+  if (!data || typeof data !== "object") return [];
+  const o = data as Record<string, unknown>;
+  const resp = (o.response ?? o) as Record<string, unknown> | undefined;
+  const ais = resp?.activeInternalSquads;
+  if (!Array.isArray(ais)) return [];
+  const uuids: string[] = [];
+  for (const s of ais) {
+    const u = (s && typeof s === "object" && "uuid" in s) ? (s as Record<string, unknown>).uuid : s;
+    if (typeof u === "string") uuids.push(u);
+  }
+  return uuids;
+}
+
+/** Извлечь telegramId и email из ответа Remna (getUser) — чтобы не затирать при частичном PATCH. */
+function extractRemnaUserFields(data: unknown): { telegramId?: number; email?: string | null } {
+  if (!data || typeof data !== "object") return {};
+  const o = data as Record<string, unknown>;
+  const resp = (o.response ?? o) as Record<string, unknown> | undefined;
+  const telegramId = resp?.telegramId;
+  const email = resp?.email;
+  return {
+    ...(typeof telegramId === "number" && { telegramId }),
+    ...(email !== undefined && { email: email != null ? String(email) : null }),
+  };
+}
+
+/** Проверка, что ошибка Remna — «пользователь не найден» (удалён в Remna или не существует). */
+function isRemnaNotFoundError(status: number, error?: string): boolean {
+  return status === 404 || (typeof error === "string" && /not found|not exist/i.test(error));
+}
+
+/** Синхронизация в Remna: отправляем данные наших клиентов (telegramId, email) в Remna.
+ *  Важно: перед PATCH получаем текущие activeInternalSquads и передаём их в теле,
+ *  иначе Remna может интерпретировать отсутствие поля как «очистить сквады» и у всех слетят.
+ *  Если пользователь в Remna не найден (404) — отвязываем клиента (remnawaveUuid = null) и считаем как unlinked. */
 export async function syncToRemna(): Promise<{
   ok: boolean;
   updated: number;
+  unlinked: number;
   errors: string[];
 }> {
-  const result = { updated: 0, errors: [] as string[] };
+  const result = { updated: 0, unlinked: 0, errors: [] as string[] };
 
   if (!isRemnaConfigured()) {
     result.errors.push("Remna API не настроен");
@@ -157,12 +195,33 @@ export async function syncToRemna(): Promise<{
     const uuid = c.remnawaveUuid;
     if (!uuid) continue;
     try {
+      const getRes = await remnaGetUser(uuid);
+      if (getRes.error) {
+        if (isRemnaNotFoundError(getRes.status, getRes.error)) {
+          await prisma.client.update({ where: { id: c.id }, data: { remnawaveUuid: null } });
+          result.unlinked++;
+        } else {
+          result.errors.push(`${uuid}: ${getRes.error}`);
+        }
+        continue;
+      }
+      const currentSquads = extractActiveInternalSquads(getRes.data);
+      const currentRemna = extractRemnaUserFields(getRes.data);
       const body: Record<string, unknown> = { uuid };
-      if (c.telegramId != null) body.telegramId = parseInt(c.telegramId, 10);
-      if (c.email != null) body.email = c.email;
+      body.telegramId = c.telegramId != null ? parseInt(c.telegramId, 10) : (currentRemna.telegramId ?? undefined);
+      body.email = c.email != null ? c.email : (currentRemna.email ?? undefined);
+      if (currentSquads.length > 0) body.activeInternalSquads = currentSquads;
       const res = await remnaUpdateUser(body);
-      if (res.error) result.errors.push(`${uuid}: ${res.error}`);
-      else result.updated++;
+      if (res.error) {
+        if (isRemnaNotFoundError(res.status, res.error)) {
+          await prisma.client.update({ where: { id: c.id }, data: { remnawaveUuid: null } });
+          result.unlinked++;
+        } else {
+          result.errors.push(`${uuid}: ${res.error}`);
+        }
+      } else {
+        result.updated++;
+      }
     } catch (e) {
       result.errors.push(`${uuid}: ${e instanceof Error ? e.message : String(e)}`);
     }

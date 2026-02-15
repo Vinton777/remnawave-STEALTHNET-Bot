@@ -174,9 +174,12 @@ export function SettingsPage() {
     setSyncMessage(null);
     try {
       const r: SyncToRemnaResult = await api.syncToRemna(token);
-      setSyncMessage(
-        r.ok ? `В Remna обновлено: ${r.updated}` : `Ошибки: ${r.errors.join("; ")}`
-      );
+      const parts: string[] = [];
+      if (r.updated > 0) parts.push(`Обновлено: ${r.updated}`);
+      if (r.unlinked > 0) parts.push(`Отвязано (не найдены в Remna): ${r.unlinked}`);
+      const successMsg = parts.length > 0 ? parts.join(". ") : "Нет изменений";
+      const msg = r.ok ? successMsg : (r.errors.length > 0 ? `Ошибки: ${r.errors.join("; ")}` : "") + (r.unlinked > 0 ? (r.errors.length ? ". " : "") + `Отвязано: ${r.unlinked}` : "");
+      setSyncMessage(msg || successMsg);
     } catch (e) {
       setSyncMessage(e instanceof Error ? e.message : "Ошибка синхронизации");
     } finally {
