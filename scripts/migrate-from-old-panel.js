@@ -503,7 +503,7 @@ async function migrate() {
       promoCodesRes = await oldDb.query(`SELECT * FROM promo_code ORDER BY id`);
     } catch {
       promoCodesRes = { rows: [] };
-      log("⚠️", "Таблица с промокодами не найдена, пропускаю");
+      log("⚠️", "Таблица промокодов не найдена, пропускаю");
     }
     stats.promoCodes.total = promoCodesRes.rows.length;
 
@@ -635,7 +635,7 @@ async function migrate() {
         );
       }
     } catch {
-      log("⚠️", "Таблица настройки триалов не найдена");
+      log("⚠️", "Таблица настроек триалов не найдена");
     }
 
     // Записываем настройки (upsert)
