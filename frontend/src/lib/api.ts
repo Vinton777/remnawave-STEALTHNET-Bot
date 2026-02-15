@@ -544,6 +544,7 @@ export interface SyncResult {
 export interface SyncToRemnaResult {
   ok: boolean;
   updated: number;
+  unlinked: number;
   errors: string[];
 }
 

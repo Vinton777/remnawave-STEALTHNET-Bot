@@ -7,6 +7,7 @@ import { prisma } from "../../db.js";
 import {
   remnaCreateUser,
   remnaUpdateUser,
+  remnaAddUsersToInternalSquad,
   remnaGetUser,
   isRemnaConfigured,
   remnaGetUserByTelegramId,
@@ -77,6 +78,9 @@ export async function activateTariffForClient(
     if (updateRes.error) {
       return { ok: false, error: updateRes.error, status: updateRes.status >= 400 ? updateRes.status : 500 };
     }
+    for (const squadUuid of tariff.internalSquadUuids) {
+      await remnaAddUsersToInternalSquad(squadUuid, { userUuids: [client.remnawaveUuid] }).catch(() => {});
+    }
   } else {
     let existingUuid: string | null = null;
     let currentExpireAt: Date | null = null;
@@ -111,6 +115,9 @@ export async function activateTariffForClient(
     if (!existingUuid) return { ok: false, error: "Ошибка создания пользователя VPN", status: 502 };
 
     await remnaUpdateUser({ uuid: existingUuid, expireAt, trafficLimitBytes, hwidDeviceLimit, activeInternalSquads: tariff.internalSquadUuids });
+    for (const squadUuid of tariff.internalSquadUuids) {
+      await remnaAddUsersToInternalSquad(squadUuid, { userUuids: [existingUuid] }).catch(() => {});
+    }
     await prisma.client.update({ where: { id: client.id }, data: { remnawaveUuid: existingUuid } });
   }
   return { ok: true };

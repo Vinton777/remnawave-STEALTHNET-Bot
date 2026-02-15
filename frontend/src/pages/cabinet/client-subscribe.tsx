@@ -188,6 +188,7 @@ export function ClientSubscribePage() {
 
   const [subscription, setSubscription] = useState<unknown>(null);
   const [pageConfig, setPageConfig] = useState<SubscriptionPageConfig>(null);
+  const [publicAppUrl, setPublicAppUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
 
@@ -197,10 +198,15 @@ export function ClientSubscribePage() {
   useEffect(() => {
     if (!token) return;
     setLoading(true);
-    Promise.all([api.clientSubscription(token), api.getPublicSubscriptionPageConfig()])
-      .then(([subRes, config]) => {
+    Promise.all([
+      api.clientSubscription(token),
+      api.getPublicSubscriptionPageConfig(),
+      api.getPublicConfig().then((c) => c?.publicAppUrl ?? null).catch(() => null),
+    ])
+      .then(([subRes, config, appUrl]) => {
         setSubscription(subRes.subscription ?? null);
         setPageConfig(config ?? null);
+        setPublicAppUrl(appUrl ?? null);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -322,10 +328,10 @@ export function ClientSubscribePage() {
                       // Кнопка «Добавить подписку» — deeplink (happ://, v2rayng:// и т.д.)
                       // Кастомные URL-схемы не работают в Telegram WebView и ломают SPA при прямом переходе.
                       // Решение: промежуточная страница /api/public/deeplink (авто-редирект + fallback-кнопка).
-                      // Для мини-аппа: перехватываем клик → tg.openLink() в системном браузере.
-                      // Для обычного сайта: обычная ссылка <a target="_blank"> — не блокируется попап-блокерами.
+                      // Для мини-аппа: tg.openLink() открывает URL в системном браузере. Важно использовать
+                      // явный publicAppUrl из конфига, т.к. в Telegram WebView origin может вести на главную.
                       if (isSubscription) {
-                        const baseUrl = window.location.origin;
+                        const baseUrl = (publicAppUrl ?? (typeof window !== "undefined" ? window.location.origin : "")).replace(/\/$/, "") || (typeof window !== "undefined" ? window.location.origin : "");
                         const deeplinkUrl = `${baseUrl}/api/public/deeplink?url=${encodeURIComponent(href)}`;
                         const handleClick = (e: React.MouseEvent) => {
                           // Копируем ссылку подписки в буфер
