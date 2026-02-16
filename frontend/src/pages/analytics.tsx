@@ -160,7 +160,7 @@ export function AnalyticsPage() {
           <MetricCard icon={Users} label="Бот + Сайт" value={fmt(s.bothClients)} color="text-emerald-500" />
           <MetricCard icon={Wallet} label="Общий баланс" value={fmtDec(s.totalBalance)} color="text-amber-500" />
           <MetricCard icon={Percent} label="Платящих" value={`${s.payingClients} (${s.payingPercent}%)`} color="text-rose-500" />
-          <MetricCard icon={RussianRuble} label="Сред. выручка на клиента" value={fmtDec(s.arpu)} sub="доход / клиент" color="text-indigo-500" />
+          <MetricCard icon={DollarSign} label="ARPU" value={fmtDec(s.arpu)} sub="доход / клиент" color="text-indigo-500" />
           <MetricCard icon={Award} label="По рефералу" value={fmt(s.withReferrer)} sub={`${s.totalClients > 0 ? Math.round((s.withReferrer / s.totalClients) * 100) : 0}% от всех`} color="text-pink-500" />
         </div>
       </section>
@@ -557,4 +557,3 @@ function aggregateByWeekTwo(
   if (weekStart) weeks.push({ label: weekStart, v1: w1, v2: w2 });
   return weeks;
 }
-

@@ -22,11 +22,8 @@ function formatSize(bytes: number): string {
 }
 
 function formatDate(path: string): string {
-  const parts = path.split(".");
-  if (parts.length === 3) {
-    const [year, month, day] = parts;
-    return `${day}.${month}.${year}`;
-  }
+  const parts = path.split("/");
+  if (parts.length >= 3) return parts.slice(0, 3).join(".");
   return path;
 }
 
